@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package pb;
+
+message Message {
+
+    enum Type {
+        REQ = 0;
+        RESP = 1;
+        HS = 3;
+    }
+
+    Type type = 1; // Message type.
+    repeated bytes cids = 2; // REQ: Ids of the blocks.
+    repeated bytes blocks = 3; // RESP: The blocks themselves.
+    string token = 4; // HS: Session id/token to control access.
+}
