@@ -1,4 +1,4 @@
-package streaming
+package blockstream
 
 import (
 	"context"
@@ -8,7 +8,6 @@ import (
 
 	"github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
-	"github.com/ipfs/go-ipfs-blockstore"
 )
 
 const getTimeout = time.Minute * 15
@@ -29,20 +28,6 @@ func newSession(ctx context.Context, rws []io.ReadWriteCloser, t Token, onErr fu
 	}
 
 	return &Session{ctx: ctx, prvs: prvs}, nil
-}
-
-func (f *Session) GetBlock(ctx context.Context, id cid.Cid) (blocks.Block, error) {
-	ch, err := f.GetBlocks(ctx, []cid.Cid{id})
-	if err != nil {
-		return nil, err
-	}
-
-	block, ok := <-ch
-	if !ok {
-		return nil, blockstore.ErrNotFound
-	}
-
-	return block, nil
 }
 
 func (f *Session) GetBlocks(ctx context.Context, ids []cid.Cid) (<-chan blocks.Block, error) {

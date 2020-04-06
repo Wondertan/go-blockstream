@@ -1,4 +1,4 @@
-package streaming
+package blockstream
 
 import (
 	"context"
@@ -92,4 +92,21 @@ func (g *accessGranter) Grant(ctx context.Context, t Token, peers ...peer.ID) <-
 	}()
 
 	return out
+}
+
+type passingGranter struct{}
+
+func NewPassingGranter() AccessGranter {
+	return &passingGranter{}
+}
+
+func (p *passingGranter) Granted(Token, peer.ID) (chan<- error, error) {
+	ch := make(chan error, 1)
+	return ch, nil
+}
+
+func (p *passingGranter) Grant(context.Context, Token, ...peer.ID) <-chan error {
+	ch := make(chan error)
+	close(ch)
+	return ch
 }

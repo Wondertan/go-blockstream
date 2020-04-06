@@ -1,4 +1,4 @@
-package streaming
+package blockstream
 
 import (
 	"io"
@@ -9,6 +9,7 @@ import (
 	"github.com/ipfs/go-datastore"
 	"github.com/ipfs/go-datastore/sync"
 	"github.com/ipfs/go-ipfs-blockstore"
+	"github.com/stretchr/testify/assert"
 )
 
 func randBlockstore(t *testing.T, rand io.Reader, count, size int) (blockstore.Blockstore, []cid.Cid) {
@@ -39,6 +40,17 @@ func randBlocks(t *testing.T, rand io.Reader, count, size int) ([]blocks.Block, 
 	}
 
 	return bs, ids
+}
+
+func assertChan(t *testing.T, ch <-chan blocks.Block, bs blockstore.Blockstore, expected int) {
+	var actual int
+	for b := range ch {
+		ok, err := bs.Has(b.Cid())
+		assert.Nil(t, err, err)
+		assert.True(t, ok)
+		actual++
+	}
+	assert.Equal(t, expected, actual)
 }
 
 type fakeStream struct {

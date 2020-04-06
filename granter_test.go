@@ -1,4 +1,4 @@
-package streaming
+package blockstream
 
 import (
 	"context"
@@ -11,13 +11,15 @@ import (
 )
 
 func TestGranterSuccess(t *testing.T) {
+	const (
+		tkn    = Token("test")
+		p1, p2 = peer.ID("peer1"), peer.ID("peer2")
+	)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	granter := NewAccessGranter()
-	tkn := Token("test")
-
-	p1, p2 := peer.ID("peer1"), peer.ID("peer2")
 
 	ch := granter.Grant(ctx, tkn, p1, p2)
 	require.NotNil(t, ch)
@@ -42,14 +44,16 @@ func TestGranterSuccess(t *testing.T) {
 }
 
 func TestGranterError(t *testing.T) {
+	const (
+		tkn    = Token("test")
+		p1, p2 = peer.ID("peer1"), peer.ID("peer2")
+	)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	granter := NewAccessGranter()
 	in := fmt.Errorf("test")
-	tkn := Token("test")
-
-	p1, p2 := peer.ID("peer1"), peer.ID("peer2")
 
 	ch := granter.Grant(ctx, tkn, p1, p2)
 	require.NotNil(t, ch)
@@ -74,12 +78,13 @@ func TestGranterError(t *testing.T) {
 }
 
 func TestGranterFail(t *testing.T) {
+	const p = peer.ID("test")
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	granter := NewAccessGranter()
 
-	p := peer.ID("test")
 	ch1 := granter.Grant(ctx, "test1", p)
 	assert.NotNil(t, ch1)
 

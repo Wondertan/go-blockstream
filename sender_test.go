@@ -1,4 +1,4 @@
-package streaming
+package blockstream
 
 import (
 	"crypto/rand"
@@ -15,9 +15,9 @@ func TestSender(t *testing.T) {
 		blockSize   = 32
 		msgSize     = 128
 		perMsg      = msgSize / blockSize
+		in          = Token("test")
 	)
 
-	in := Token("test")
 	bs, ids := randBlockstore(t, rand.Reader, blocksCount*reqsCount, blockSize)
 	s1, s2 := pair()
 

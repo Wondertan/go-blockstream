@@ -7,9 +7,11 @@ require (
 	github.com/golang/protobuf v1.3.1
 	github.com/ipfs/go-block-format v0.0.2
 	github.com/ipfs/go-cid v0.0.5
-	github.com/ipfs/go-datastore v0.4.1
+	github.com/ipfs/go-datastore v0.4.4
 	github.com/ipfs/go-ipfs-blockstore v1.0.0
-	github.com/ipfs/go-log v1.0.2
-	github.com/libp2p/go-libp2p-core v0.5.0
+	github.com/ipfs/go-ipfs-exchange-interface v0.0.1 // indirect
+	github.com/ipfs/go-log v1.0.3
+	github.com/libp2p/go-libp2p v0.7.4
+	github.com/libp2p/go-libp2p-core v0.5.1
 	github.com/stretchr/testify v1.4.0
 )

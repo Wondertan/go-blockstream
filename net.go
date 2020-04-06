@@ -1,4 +1,4 @@
-package streaming
+package blockstream
 
 import (
 	"errors"
@@ -27,7 +27,7 @@ func giveHand(rw io.ReadWriter, out Token) error {
 	}
 
 	if in != out {
-		return fmt.Errorf("streaming: handshake failed: tokens are not equal")
+		return fmt.Errorf("streaming: handshake failed: tokens are not equal(exp: %s, recv: %s)", out, in)
 	}
 
 	return nil
