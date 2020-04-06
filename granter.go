@@ -47,6 +47,10 @@ func (g *accessGranter) Granted(t Token, p peer.ID) (chan<- error, error) {
 	}
 
 	ch, ok := tg[p]
+	if !ok {
+		return nil, NewError(p, t, ErrNotGranted)
+	}
+
 	return ch, nil
 }
 
