@@ -34,14 +34,14 @@ type BlockStream struct {
 		wg sync.WaitGroup
 	}
 
-	autosave bool
+	put putter
 }
 
 type Option func(plain *BlockStream)
 
 func WithAutoSave() Option {
 	return func(bs *BlockStream) {
-		bs.autosave = true
+		bs.put = bs.Blocks
 	}
 }
 
@@ -60,6 +60,7 @@ func NewBlockStream(host host.Host, blocks blockstore.Blockstore, granter Access
 			l  sync.Mutex
 			wg sync.WaitGroup
 		}{m: make(map[Token]*sender)},
+		put: &nilPutter{},
 	}
 	for _, opt := range opts {
 		opt(bs)
@@ -89,11 +90,16 @@ func (bs *BlockStream) Session(ctx context.Context, peers []peer.ID, token Token
 		}
 	}
 
-	ses, err = newSession(ctx, streams, token, func(f func() error) {
-		if err := f(); err != nil {
-			log.Error(err)
-		}
-	})
+	ses, err = newSession(ctx,
+		bs.put,
+		streams,
+		token,
+		func(f func() error) {
+			if err := f(); err != nil {
+				log.Error(err)
+			}
+		},
+	)
 	if err != nil {
 		return
 	}
@@ -110,6 +116,7 @@ func (bs *BlockStream) Session(ctx context.Context, peers []peer.ID, token Token
 		bs.sessions.wg.Done()
 		bs.sessions.l.Unlock()
 	}()
+
 	return
 }
 
@@ -143,9 +150,9 @@ func (bs *BlockStream) handler(stream network.Stream) error {
 	bs.senders.m[s.t] = s
 	bs.senders.wg.Add(1)
 	bs.senders.l.Unlock()
+
 	return nil
 }
 
 type onToken func(Token) error
-
 type onClose func(func() error)

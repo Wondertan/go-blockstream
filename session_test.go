@@ -21,7 +21,7 @@ func TestSession(t *testing.T) {
 
 	bs, ids := randBlockstore(t, rand.Reader, count, size)
 
-	ses, err := newSession(ctx, nil, tkn, nil)
+	ses, err := newSession(ctx, &nilPutter{}, nil, tkn, nil)
 	require.Nil(t, err, err)
 
 	ses.addReceiver(rcv(t, ctx, tkn, bs, msgSize))
@@ -53,7 +53,7 @@ func rcv(t *testing.T, ctx context.Context, tkn Token, blocks getter, max int) *
 		require.Nil(t, err, err)
 	}()
 
-	r, err := newReceiver(ctx, p, tkn, eh)
+	r, err := newReceiver(ctx, &nilPutter{}, p, tkn, eh)
 	require.Nil(t, err, err)
 	return r
 }

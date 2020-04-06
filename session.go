@@ -18,10 +18,16 @@ type Session struct {
 	l    sync.RWMutex
 }
 
-func newSession(ctx context.Context, rws []io.ReadWriteCloser, t Token, onErr func(func() error)) (_ *Session, err error) {
+func newSession(
+	ctx context.Context,
+	put putter,
+	rws []io.ReadWriteCloser,
+	t Token,
+	onErr func(func() error),
+) (_ *Session, err error) {
 	prvs := make([]*receiver, len(rws))
 	for i, s := range rws {
-		prvs[i], err = newReceiver(ctx, s, t, onErr)
+		prvs[i], err = newReceiver(ctx, put, s, t, onErr)
 		if err != nil {
 			return
 		}

@@ -13,8 +13,20 @@ import (
 
 const queueSize = 8
 
+// putter is an interface responsible for saving blocks.
+type putter interface {
+	PutMany([]blocks.Block) error
+}
+
+type nilPutter struct{}
+
+func (f *nilPutter) PutMany([]blocks.Block) error {
+	return nil
+}
+
 // receiver represents an entity responsible for retrieving blocks from remote peer.
 type receiver struct {
+	put putter
 	rwc io.ReadWriteCloser
 	t   Token
 
@@ -24,8 +36,25 @@ type receiver struct {
 }
 
 // newReceiver creates new receiver from fakeStream.
-func newReceiver(ctx context.Context, rwc io.ReadWriteCloser, t Token, onErr func(func() error)) (*receiver, error) {
-	rcv := &receiver{rwc: rwc, t: t, ctx: ctx, writeCh: make(chan *write, queueSize), readCh: make(chan *read, queueSize)}
+func newReceiver(
+	ctx context.Context,
+	put putter,
+	rwc io.ReadWriteCloser,
+	t Token,
+	onErr func(func() error),
+) (*receiver, error) {
+	rcv := &receiver{
+		put:     put,
+		rwc:     rwc,
+		t:       t,
+		ctx:     ctx,
+		writeCh: make(chan *write, queueSize),
+		readCh:  make(chan *read, queueSize),
+	}
+	if rcv.put == nil {
+		rcv.put = &nilPutter{}
+	}
+
 	err := rcv.handleHandshake(t)
 	if err != nil {
 		return nil, err
@@ -33,6 +62,7 @@ func newReceiver(ctx context.Context, rwc io.ReadWriteCloser, t Token, onErr fun
 
 	go onErr(rcv.write)
 	go onErr(rcv.read)
+
 	return rcv, nil
 }
 
@@ -125,6 +155,11 @@ func (rcv *receiver) handleRead(r *read) error {
 	expected := len(r.ids)
 	for {
 		bs, err := readBlocksResp(rcv.rwc, r.ids[received:])
+		if err != nil {
+			return err
+		}
+
+		err = rcv.put.PutMany(bs)
 		if err != nil {
 			return err
 		}
