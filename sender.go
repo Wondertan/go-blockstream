@@ -24,14 +24,20 @@ type sender struct {
 }
 
 // newSender creates new sender.
-func newSender(rwc io.ReadWriteCloser, blocks getter, max int, ot onToken, oe onClose) (*sender, error) {
-	snr := &sender{rwc: rwc, blocks: blocks, max: max}
+func newSender(rwc io.ReadWriteCloser, blocks getter, max int, ot onToken, onErr onClose) (*sender, error) {
+	snr := &sender{
+		rwc:    rwc,
+		blocks: blocks,
+		max:    max,
+	}
+
 	err := snr.handleHandshake(ot)
 	if err != nil {
 		return nil, err
 	}
 
-	go oe(snr.readWrite)
+	go onErr(snr.readWrite)
+
 	return snr, nil
 }
 

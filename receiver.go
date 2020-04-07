@@ -8,9 +8,6 @@ import (
 	"github.com/ipfs/go-cid"
 )
 
-// TODO Handle errors for every block independently trough MaybeBlock.
-// TODO Handle contexts on reads and writes.
-
 const queueSize = 8
 
 // putter is an interface responsible for saving blocks.
@@ -68,16 +65,21 @@ func newReceiver(
 
 // receive retrieves blocks by their ids from the remote receiver and sends them to the channel in original order.
 func (rcv *receiver) receive(ctx context.Context, ids []cid.Cid, out chan<- blocks.Block) error {
+	// TODO Guarantee that write and read are always sent to the chans together.
 	select {
-	case rcv.writeCh <- &write{ctx: ctx, ids: ids}:
+	case rcv.writeCh <- &write{ids: ids}:
 	case <-rcv.ctx.Done():
 		return rcv.ctx.Err()
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 
 	select {
 	case rcv.readCh <- &read{ctx: ctx, ids: ids, out: out}:
 	case <-rcv.ctx.Done():
 		return rcv.ctx.Err()
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 
 	return nil
@@ -99,7 +101,7 @@ func (rcv *receiver) write() error {
 	}
 }
 
-// read is a long running method which handles reads from the receiver.
+// read is a long running method which handles blocks from the receiver.
 func (rcv *receiver) read() error {
 	for {
 		select {
@@ -133,7 +135,6 @@ func (rcv *receiver) handleCloseRead() error {
 
 // write is a tuple of params needed for writing block request.
 type write struct {
-	ctx context.Context
 	ids []cid.Cid
 }
 
@@ -168,7 +169,7 @@ func (rcv *receiver) handleRead(r *read) error {
 			select {
 			case r.out <- b:
 			case <-r.ctx.Done():
-				return r.ctx.Err()
+				// it is still required to read the whole request out, even the context is canceled.
 			}
 		}
 

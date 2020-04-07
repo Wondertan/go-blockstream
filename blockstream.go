@@ -2,6 +2,7 @@ package blockstream
 
 import (
 	"context"
+	"errors"
 	"io"
 	"sync"
 
@@ -16,6 +17,8 @@ import (
 var log = logging.Logger("blockstream")
 
 const Protocol protocol.ID = "/blockstream/1.0.0"
+
+var errClosed = errors.New("blockstream: closed")
 
 type BlockStream struct {
 	Host    host.Host
@@ -34,7 +37,8 @@ type BlockStream struct {
 		wg sync.WaitGroup
 	}
 
-	put putter
+	put    putter
+	closed chan struct{}
 }
 
 type Option func(plain *BlockStream)
@@ -60,7 +64,8 @@ func NewBlockStream(host host.Host, blocks blockstore.Blockstore, granter Access
 			l  sync.Mutex
 			wg sync.WaitGroup
 		}{m: make(map[Token]*sender)},
-		put: &nilPutter{},
+		put:    &nilPutter{},
+		closed: make(chan struct{}),
 	}
 	for _, opt := range opts {
 		opt(bs)
@@ -76,12 +81,21 @@ func NewBlockStream(host host.Host, blocks blockstore.Blockstore, granter Access
 }
 
 func (bs *BlockStream) Close() error {
+	if bs.isClosed() {
+		return errClosed
+	}
+
+	close(bs.closed)
 	bs.sessions.wg.Wait()
 	bs.senders.wg.Wait()
 	return nil
 }
 
 func (bs *BlockStream) Session(ctx context.Context, peers []peer.ID, token Token) (ses *Session, err error) {
+	if bs.isClosed() {
+		return nil, errClosed
+	}
+
 	streams := make([]io.ReadWriteCloser, len(peers))
 	for i, p := range peers {
 		streams[i], err = bs.Host.NewStream(ctx, p, Protocol)
@@ -126,8 +140,9 @@ func (bs *BlockStream) handler(stream network.Stream) error {
 		tkn  Token
 	)
 	s, err := newSender(stream, bs.Blocks, maxMsgSize,
-		func(tkn Token) (err error) {
+		func(t Token) (err error) {
 			done, err = bs.Granter.Granted(tkn, stream.Conn().RemotePeer())
+			tkn = t
 			return
 		},
 		func(f func() error) {
@@ -152,6 +167,15 @@ func (bs *BlockStream) handler(stream network.Stream) error {
 	bs.senders.l.Unlock()
 
 	return nil
+}
+
+func (bs *BlockStream) isClosed() bool {
+	select {
+	case <-bs.closed:
+		return true
+	default:
+		return false
+	}
 }
 
 type onToken func(Token) error
