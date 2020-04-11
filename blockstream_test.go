@@ -67,8 +67,7 @@ func TestBlockStream(t *testing.T) {
 
 	chans := make([]<-chan blocks.Block, nodesCount)
 	for i, s := range sessions {
-		chans[i], err = s.GetBlocks(ctx, cids)
-		require.Nil(t, err, err)
+		chans[i] = s.Blocks(ctx, cids)
 	}
 
 	for _, ch := range chans {

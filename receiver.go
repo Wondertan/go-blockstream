@@ -63,7 +63,7 @@ func newReceiver(
 	return rcv, nil
 }
 
-// receive retrieves blocks by their ids from the remote receiver and sends them to the channel in original order.
+// receive retrieves blocks by their ids from the remote sender and sends them to the channel in original order.
 func (rcv *receiver) receive(ctx context.Context, ids []cid.Cid, out chan<- blocks.Block) error {
 	// TODO Guarantee that write and read are always sent to the chans together.
 	select {

@@ -5,10 +5,11 @@ import (
 	"crypto/rand"
 	"testing"
 
+	"github.com/ipfs/go-cid"
 	"github.com/stretchr/testify/require"
 )
 
-func TestSession(t *testing.T) {
+func TestSessionStream(t *testing.T) {
 	const (
 		count   = 130
 		size    = 64
@@ -28,11 +29,36 @@ func TestSession(t *testing.T) {
 	ses.addReceiver(rcv(t, ctx, tkn, bs, msgSize))
 	ses.addReceiver(rcv(t, ctx, tkn, bs, msgSize))
 
-	ch1, err := ses.GetBlocks(ctx, ids[:count/2])
+	in := make(chan []cid.Cid, 1)
+	in <- ids
+	close(in)
+
+	out := ses.Stream(ctx, in)
+	assertChan(t, out, bs, count)
+}
+
+func TestSessionBlocks(t *testing.T) {
+	const (
+		count   = 130
+		size    = 64
+		msgSize = 256
+		tkn     = Token("test")
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	bs, ids := randBlockstore(t, rand.Reader, count, size)
+
+	ses, err := newSession(ctx, &nilPutter{}, nil, tkn, nil)
 	require.Nil(t, err, err)
 
-	ch2, err := ses.GetBlocks(ctx, ids[count/2:])
-	require.Nil(t, err, err)
+	ses.addReceiver(rcv(t, ctx, tkn, bs, msgSize))
+	ses.addReceiver(rcv(t, ctx, tkn, bs, msgSize))
+	ses.addReceiver(rcv(t, ctx, tkn, bs, msgSize))
+
+	ch1 := ses.Blocks(ctx, ids[:count/2])
+	ch2 := ses.Blocks(ctx, ids[count/2:])
 
 	assertChan(t, ch1, bs, count/2)
 	assertChan(t, ch2, bs, count/2)
