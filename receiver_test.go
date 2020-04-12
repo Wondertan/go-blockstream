@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"testing"
 
+	"github.com/Wondertan/go-libp2p-access"
 	"github.com/ipfs/go-block-format"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -19,10 +20,10 @@ func TestReceiver(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	tkn := Token("test")
+	tkn := access.Token("test")
 	s1, s2 := pair()
 
-	go checkHand(s2, func(token Token) error { return nil })
+	go checkHand(s2, func(token access.Token) error { return nil })
 	rcv, err := newReceiver(ctx, &nilPutter{}, s1, tkn, func(f func() error) {
 		if err := f(); err != nil {
 			t.Fatal(err)

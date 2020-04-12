@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"testing"
 
+	"github.com/Wondertan/go-libp2p-access"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -15,7 +16,7 @@ func TestSender(t *testing.T) {
 		blockSize   = 32
 		msgSize     = 128
 		perMsg      = msgSize / blockSize
-		in          = Token("test")
+		in          = access.Token("test")
 	)
 
 	bs, ids := randBlockstore(t, rand.Reader, blocksCount*reqsCount, blockSize)
@@ -23,7 +24,7 @@ func TestSender(t *testing.T) {
 
 	go giveHand(s2, in)
 	_, err := newSender(s1, bs, msgSize,
-		func(out Token) error {
+		func(out access.Token) error {
 			assert.Equal(t, in, out)
 			return nil
 		},

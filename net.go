@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/Wondertan/go-libp2p-access"
 	"github.com/Wondertan/go-serde"
 	"github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
@@ -15,7 +16,7 @@ import (
 
 var maxMsgSize = network.MessageSizeMax
 
-func giveHand(rw io.ReadWriter, out Token) error {
+func giveHand(rw io.ReadWriter, out access.Token) error {
 	err := writeToken(rw, out)
 	if err != nil {
 		return err
@@ -33,7 +34,7 @@ func giveHand(rw io.ReadWriter, out Token) error {
 	return nil
 }
 
-func checkHand(rw io.ReadWriter, check onToken) (Token, error) {
+func checkHand(rw io.ReadWriter, check onToken) (access.Token, error) {
 	token, err := readToken(rw)
 	if err != nil {
 		return "", err
@@ -52,7 +53,7 @@ func checkHand(rw io.ReadWriter, check onToken) (Token, error) {
 	return token, nil
 }
 
-func writeToken(w io.Writer, token Token) error {
+func writeToken(w io.Writer, token access.Token) error {
 	_, err := serde.Write(w, &pb.Message{Type: pb.Message_REQ, Token: string(token)})
 	if err != nil {
 		return fmt.Errorf("can't write token: %w", err)
@@ -61,14 +62,14 @@ func writeToken(w io.Writer, token Token) error {
 	return nil
 }
 
-func readToken(r io.Reader) (Token, error) {
+func readToken(r io.Reader) (access.Token, error) {
 	msg := new(pb.Message)
 	_, err := serde.Read(r, msg)
 	if err != nil {
 		return "", fmt.Errorf("can't read token: %w", err)
 	}
 
-	return Token(msg.Token), nil
+	return access.Token(msg.Token), nil
 }
 
 func writeBlocksReq(w io.Writer, ids []cid.Cid) error {

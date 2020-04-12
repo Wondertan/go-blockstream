@@ -6,6 +6,7 @@ import (
 	"io"
 	"sync"
 
+	"github.com/Wondertan/go-libp2p-access"
 	"github.com/ipfs/go-ipfs-blockstore"
 	logging "github.com/ipfs/go-log"
 	"github.com/libp2p/go-libp2p-core/host"
@@ -22,17 +23,17 @@ var errClosed = errors.New("blockstream: closed")
 
 type BlockStream struct {
 	Host    host.Host
-	Granter AccessGranter
+	Granter access.Granter
 	Blocks  blockstore.Blockstore
 
 	sessions struct {
-		m  map[Token]*Session
+		m  map[access.Token]*Session
 		l  sync.Mutex
 		wg sync.WaitGroup
 	}
 
 	senders struct {
-		m  map[Token]*sender
+		m  map[access.Token]*sender
 		l  sync.Mutex
 		wg sync.WaitGroup
 	}
@@ -49,21 +50,21 @@ func WithAutoSave() Option {
 	}
 }
 
-func NewBlockStream(host host.Host, blocks blockstore.Blockstore, granter AccessGranter, opts ...Option) *BlockStream {
+func NewBlockStream(host host.Host, blocks blockstore.Blockstore, granter access.Granter, opts ...Option) *BlockStream {
 	bs := &BlockStream{
 		Host:    host,
 		Granter: granter,
 		Blocks:  blocks,
 		sessions: struct {
-			m  map[Token]*Session
+			m  map[access.Token]*Session
 			l  sync.Mutex
 			wg sync.WaitGroup
-		}{m: make(map[Token]*Session)},
+		}{m: make(map[access.Token]*Session)},
 		senders: struct {
-			m  map[Token]*sender
+			m  map[access.Token]*sender
 			l  sync.Mutex
 			wg sync.WaitGroup
-		}{m: make(map[Token]*sender)},
+		}{m: make(map[access.Token]*sender)},
 		put:    &nilPutter{},
 		closed: make(chan struct{}),
 	}
@@ -91,7 +92,8 @@ func (bs *BlockStream) Close() error {
 	return nil
 }
 
-func (bs *BlockStream) Session(ctx context.Context, token Token, peers ...peer.ID) (ses *Session, err error) {
+// Session starts new BlockStream session between current node and providing 'peers' within the Token namespace.
+func (bs *BlockStream) Session(ctx context.Context, token access.Token, peers ...peer.ID) (ses *Session, err error) {
 	if bs.isClosed() {
 		return nil, errClosed
 	}
@@ -137,10 +139,10 @@ func (bs *BlockStream) Session(ctx context.Context, token Token, peers ...peer.I
 func (bs *BlockStream) handler(stream network.Stream) error {
 	var (
 		done chan<- error
-		tkn  Token
+		tkn  access.Token
 	)
 	s, err := newSender(stream, bs.Blocks, maxMsgSize,
-		func(t Token) (err error) {
+		func(t access.Token) (err error) {
 			done, err = bs.Granter.Granted(tkn, stream.Conn().RemotePeer())
 			tkn = t
 			return
@@ -178,5 +180,5 @@ func (bs *BlockStream) isClosed() bool {
 	}
 }
 
-type onToken func(Token) error
+type onToken func(access.Token) error
 type onClose func(func() error)

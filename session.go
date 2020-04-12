@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Wondertan/go-libp2p-access"
 	"github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
 )
@@ -31,7 +32,7 @@ func newSession(
 	ctx context.Context,
 	put putter,
 	rws []io.ReadWriteCloser,
-	t Token,
+	t access.Token,
 	onErr func(func() error),
 ) (_ *Session, err error) {
 	ctx, cancel := context.WithCancel(ctx)

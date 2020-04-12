@@ -4,9 +4,8 @@ import (
 	"context"
 	"errors"
 
+	"github.com/Wondertan/go-libp2p-access"
 	"github.com/libp2p/go-libp2p-core/peer"
-
-	"github.com/Wondertan/go-blockstream"
 )
 
 type (
@@ -36,7 +35,7 @@ func GetProviders(ctx context.Context) ([]peer.ID, error) {
 	return ids, nil
 }
 
-func WithToken(ctx context.Context, token blockstream.Token) context.Context {
+func WithToken(ctx context.Context, token access.Token) context.Context {
 	if len(token) == 0 {
 		return ctx
 	}
@@ -44,8 +43,8 @@ func WithToken(ctx context.Context, token blockstream.Token) context.Context {
 	return context.WithValue(ctx, tokenKey{}, token)
 }
 
-func GetToken(ctx context.Context) (blockstream.Token, error) {
-	token, ok := ctx.Value(tokenKey{}).(blockstream.Token)
+func GetToken(ctx context.Context) (access.Token, error) {
+	token, ok := ctx.Value(tokenKey{}).(access.Token)
 	if !ok {
 		return "", ErrNoToken
 	}

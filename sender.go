@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/Wondertan/go-libp2p-access"
 	"github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
 )
@@ -19,7 +20,7 @@ type getter interface {
 type sender struct {
 	rwc    io.ReadWriteCloser
 	blocks getter
-	t      Token
+	t      access.Token
 	max    int
 }
 

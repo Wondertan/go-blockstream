@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"testing"
 
+	"github.com/Wondertan/go-libp2p-access"
 	"github.com/ipfs/go-cid"
 	"github.com/stretchr/testify/require"
 )
@@ -14,7 +15,7 @@ func TestSessionStream(t *testing.T) {
 		count   = 130
 		size    = 64
 		msgSize = 256
-		tkn     = Token("test")
+		tkn     = access.Token("test")
 	)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -42,7 +43,7 @@ func TestSessionBlocks(t *testing.T) {
 		count   = 130
 		size    = 64
 		msgSize = 256
-		tkn     = Token("test")
+		tkn     = access.Token("test")
 	)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -64,7 +65,7 @@ func TestSessionBlocks(t *testing.T) {
 	assertChan(t, ch2, bs, count/2)
 }
 
-func rcv(t *testing.T, ctx context.Context, tkn Token, blocks getter, max int) *receiver {
+func rcv(t *testing.T, ctx context.Context, tkn access.Token, blocks getter, max int) *receiver {
 	eh := func(f func() error) {
 		if err := f(); err != nil {
 			t.Error(err)
@@ -73,7 +74,7 @@ func rcv(t *testing.T, ctx context.Context, tkn Token, blocks getter, max int) *
 
 	p, s := pair()
 	go func() {
-		_, err := newSender(s, blocks, max, func(token Token) error {
+		_, err := newSender(s, blocks, max, func(token access.Token) error {
 			return nil
 		}, eh)
 		require.Nil(t, err, err)

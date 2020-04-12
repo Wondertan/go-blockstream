@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 
+	"github.com/Wondertan/go-libp2p-access"
 	"github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
 )
@@ -25,7 +26,7 @@ func (f *nilPutter) PutMany([]blocks.Block) error {
 type receiver struct {
 	put putter
 	rwc io.ReadWriteCloser
-	t   Token
+	t   access.Token
 
 	ctx     context.Context
 	writeCh chan *write
@@ -37,7 +38,7 @@ func newReceiver(
 	ctx context.Context,
 	put putter,
 	rwc io.ReadWriteCloser,
-	t Token,
+	t access.Token,
 	onErr func(func() error),
 ) (*receiver, error) {
 	rcv := &receiver{
@@ -116,7 +117,7 @@ func (rcv *receiver) read() error {
 	}
 }
 
-func (rcv *receiver) handleHandshake(t Token) error {
+func (rcv *receiver) handleHandshake(t access.Token) error {
 	return giveHand(rcv.rwc, t)
 }
 

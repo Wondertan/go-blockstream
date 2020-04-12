@@ -10,6 +10,8 @@ import (
 	"github.com/libp2p/go-libp2p-core/peer"
 	mocknet "github.com/libp2p/go-libp2p/p2p/net/mock"
 	"github.com/stretchr/testify/require"
+
+	"github.com/Wondertan/go-libp2p-access"
 )
 
 func TestBlockStream(t *testing.T) {
@@ -17,7 +19,7 @@ func TestBlockStream(t *testing.T) {
 		nodesCount  = 5
 		blocksCount = 256
 		size        = 64
-		tkn         = Token("test")
+		tkn         = access.Token("test")
 	)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -31,7 +33,7 @@ func TestBlockStream(t *testing.T) {
 
 	nodes := make([]*BlockStream, nodesCount)
 	for i, h := range hs {
-		nodes[i] = NewBlockStream(h, bs, NewPassingGranter())
+		nodes[i] = NewBlockStream(h, bs, access.NewPassingGranter())
 	}
 
 	wg := new(sync.WaitGroup)
