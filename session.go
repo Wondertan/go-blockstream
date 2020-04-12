@@ -13,9 +13,17 @@ import (
 const timeout = time.Minute * 15
 
 type Session struct {
-	ctx  context.Context
-	prvs []*receiver
-	l    sync.RWMutex
+	ctx context.Context
+
+	blocks struct {
+		m map[cid.Cid]blocks.Block
+		l sync.RWMutex
+	}
+
+	rcvrs struct {
+		s []*receiver
+		l sync.RWMutex
+	}
 }
 
 func newSession(
@@ -25,29 +33,40 @@ func newSession(
 	t Token,
 	onErr func(func() error),
 ) (_ *Session, err error) {
-	prvs := make([]*receiver, len(rws))
+	rcvrs := make([]*receiver, len(rws))
 	for i, s := range rws {
-		prvs[i], err = newReceiver(ctx, put, s, t, onErr)
+		rcvrs[i], err = newReceiver(ctx, put, s, t, onErr)
 		if err != nil {
 			return
 		}
 	}
 
-	return &Session{ctx: ctx, prvs: prvs}, nil
+	return &Session{
+		ctx: ctx,
+		rcvrs: struct {
+			s []*receiver
+			l sync.RWMutex
+		}{s: rcvrs},
+		blocks: struct {
+			m map[cid.Cid]blocks.Block
+			l sync.RWMutex
+		}{m: make(map[cid.Cid]blocks.Block)},
+	}, nil
 }
 
 // Stream starts direct block fetching from remote providers. It fetches the blocks requested with 'in' chan by their ids.
 // Stream is automatically stopped when both: the requested blocks are all fetched and 'in' chan is closed.
 // It might be also stopped by force with the provided context.
-func (f *Session) Stream(ctx context.Context, in chan []cid.Cid) <-chan blocks.Block {
-	remains := cid.NewSet()
+// Order is not guaranteed.
+func (f *Session) Stream(ctx context.Context, in <-chan []cid.Cid) <-chan blocks.Block {
+	remains := 0
 	out := make(chan blocks.Block)
 
 	go func() {
 		defer func() {
 			close(out)
-			if remains.Len() != 0 {
-				log.Warnf("Stream finished with %d blocks remained unloaded.", remains.Len())
+			if remains != 0 {
+				log.Warnf("Stream finished with %d blocks remained unloaded.", remains)
 			}
 		}()
 
@@ -55,11 +74,11 @@ func (f *Session) Stream(ctx context.Context, in chan []cid.Cid) <-chan blocks.B
 		for {
 			select {
 			case b := <-buf:
+				f.trackBlock(b)
 				select {
 				case out <- b:
-					// TODO Track metrics
-					remains.Remove(b.Cid())
-					if remains.Len() == 0 && in == nil {
+					remains--
+					if remains == 0 && in == nil {
 						return
 					}
 				case <-ctx.Done(): // Only care about Stream context here.
@@ -67,7 +86,7 @@ func (f *Session) Stream(ctx context.Context, in chan []cid.Cid) <-chan blocks.B
 				}
 			case ids, ok := <-in:
 				if !ok {
-					if remains.Len() > 0 {
+					if remains != 0 {
 						in = nil
 						continue
 					} else {
@@ -75,16 +94,23 @@ func (f *Session) Stream(ctx context.Context, in chan []cid.Cid) <-chan blocks.B
 					}
 				}
 
-				for _, id := range ids {
-					remains.Add(id)
-				}
-
+				trkd, ids := f.tracked(ids)
 				for prv, ids := range f.distribute(ids) {
 					err := prv.receive(ctx, ids, buf)
 					if err != nil {
 						return
 					}
 				}
+
+				for _, b := range trkd {
+					select {
+					case out <- b:
+					case <-ctx.Done():
+						return
+					}
+				}
+
+				remains += len(ids)
 			case <-ctx.Done():
 				return
 			case <-f.ctx.Done():
@@ -98,69 +124,79 @@ func (f *Session) Stream(ctx context.Context, in chan []cid.Cid) <-chan blocks.B
 
 // Blocks fetches blocks by their ids from the providers in the session.
 func (f *Session) Blocks(ctx context.Context, ids []cid.Cid) <-chan blocks.Block {
+	trkd, ids := f.tracked(ids)
+	remains := len(ids)
 	out := make(chan blocks.Block)
-	if len(ids) == 0 {
+	if remains == 0 {
 		close(out)
 		return out
 	}
 
 	go func() {
-		defer close(out)
-
 		ctx, cancel := context.WithTimeout(ctx, timeout)
-		defer cancel()
+		defer func() {
+			cancel()
+			close(out)
+			if remains != 0 {
+				log.Warnf("Blocks finished earlier with %d remaining blocks.", remains)
+			}
+		}()
 
-		remains, err := f.getBlocks(ctx, ids, out)
-		if err != nil {
-			log.Warnf("Blocks finished earlier with %d remaining blocks.", len(remains))
+		buf := make(chan blocks.Block, len(ids))
+		for prv, ids := range f.distribute(ids) {
+			err := prv.receive(ctx, ids, buf)
+			if err != nil {
+				return
+			}
+		}
+
+		for _, b := range trkd {
+			select {
+			case out <- b:
+			case <-ctx.Done():
+				return
+			}
+		}
+
+		for {
+			select {
+			case b := <-buf:
+				f.trackBlock(b)
+				select {
+				case out <- b:
+					remains--
+					if remains == 0 {
+						return
+					}
+				case <-ctx.Done(): // GetBlocks context
+					return
+				}
+			case <-f.ctx.Done(): // Session context
+				return
+			}
 		}
 	}()
 
 	return out
 }
 
-// On error returns the error itself with remaining ids which were not received.
-func (f *Session) getBlocks(ctx context.Context, ids []cid.Cid, out chan<- blocks.Block) ([]cid.Cid, error) {
-	in := make(chan blocks.Block, len(ids))
-	for prv, ids := range f.distribute(ids) {
-		err := prv.receive(ctx, ids, in)
-		if err != nil {
-			return ids, err
-		}
+func (f *Session) Close() error {
+	for id := range f.blocks.m { // explicitly clean the tracked blocks.
+		delete(f.blocks.m, id)
 	}
 
-	remains := cid.NewSet()
-	for _, id := range ids {
-		remains.Add(id)
-	}
-
-	for {
-		select {
-		case b := <-in:
-			select {
-			case out <- b:
-				remains.Remove(b.Cid())
-				if remains.Len() == 0 {
-					return nil, nil
-				}
-			case <-ctx.Done(): // GetBlocks context
-				return remains.Keys(), ctx.Err()
-			}
-		case <-f.ctx.Done(): // Session context
-			return remains.Keys(), f.ctx.Err()
-		}
-	}
+	return nil
 }
 
 // distribute splits ids between providers to download from multiple sources.
 func (f *Session) distribute(ids []cid.Cid) map[*receiver][]cid.Cid {
-	f.l.RLock()
-	defer f.l.RUnlock()
+	f.rcvrs.l.RLock()
+	defer f.rcvrs.l.RUnlock()
 
-	l := len(f.prvs)
+	l := len(f.rcvrs.s)
 	distrib := make(map[*receiver][]cid.Cid, l)
 	for i, k := range ids {
-		p := f.prvs[i%l]
+		p := f.rcvrs.s[i%l]
 		distrib[p] = append(distrib[p], k)
 	}
 
@@ -168,8 +204,31 @@ func (f *Session) distribute(ids []cid.Cid) map[*receiver][]cid.Cid {
 }
 
 func (f *Session) addReceiver(prv *receiver) {
-	f.l.Lock()
-	defer f.l.Unlock()
+	f.rcvrs.l.Lock()
+	defer f.rcvrs.l.Unlock()
 
-	f.prvs = append(f.prvs, prv)
+	f.rcvrs.s = append(f.rcvrs.s, prv)
+}
+
+func (f *Session) trackBlock(b blocks.Block) {
+	f.blocks.l.Lock()
+	defer f.blocks.l.Unlock()
+
+	f.blocks.m[b.Cid()] = b
+}
+
+func (f *Session) tracked(in []cid.Cid) (bs []blocks.Block, out []cid.Cid) {
+	f.blocks.l.RLock()
+	defer f.blocks.l.RUnlock()
+
+	for _, id := range in {
+		b, ok := f.blocks.m[id]
+		if ok {
+			bs = append(bs, b)
+		} else {
+			out = append(out, id)
+		}
+	}
+
+	return
 }

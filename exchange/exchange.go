@@ -55,6 +55,10 @@ func (e *exchange) NewSession(ctx context.Context) iexchange.Fetcher {
 	}
 
 	ses, err := (*blockstream.BlockStream)(e).Session(ctx, prvs, tkn)
+	go func() {
+		<-ctx.Done()
+		ses.Close()
+	}()
 	return &fetcher{ses: ses, err: err}
 }
 
@@ -67,7 +71,7 @@ func (f *fetcher) GetBlocks(ctx context.Context, ids []cid.Cid) (<-chan blocks.B
 		return nil, f.err
 	}
 
-	return f.ses.Blocks(ctx, ids)
+	return f.ses.Blocks(ctx, ids), nil
 }
 
 func getBlock(
