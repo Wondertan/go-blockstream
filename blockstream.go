@@ -91,7 +91,7 @@ func (bs *BlockStream) Close() error {
 	return nil
 }
 
-func (bs *BlockStream) Session(ctx context.Context, peers []peer.ID, token Token) (ses *Session, err error) {
+func (bs *BlockStream) Session(ctx context.Context, token Token, peers ...peer.ID) (ses *Session, err error) {
 	if bs.isClosed() {
 		return nil, errClosed
 	}

@@ -13,7 +13,8 @@ import (
 const timeout = time.Minute * 15
 
 type Session struct {
-	ctx context.Context
+	ctx    context.Context
+	cancel context.CancelFunc
 
 	blocks struct {
 		m map[cid.Cid]blocks.Block
@@ -33,6 +34,7 @@ func newSession(
 	t Token,
 	onErr func(func() error),
 ) (_ *Session, err error) {
+	ctx, cancel := context.WithCancel(ctx)
 	rcvrs := make([]*receiver, len(rws))
 	for i, s := range rws {
 		rcvrs[i], err = newReceiver(ctx, put, s, t, onErr)
@@ -42,7 +44,8 @@ func newSession(
 	}
 
 	return &Session{
-		ctx: ctx,
+		ctx:    ctx,
+		cancel: cancel,
 		rcvrs: struct {
 			s []*receiver
 			l sync.RWMutex
@@ -181,6 +184,7 @@ func (f *Session) Blocks(ctx context.Context, ids []cid.Cid) <-chan blocks.Block
 }
 
 func (f *Session) Close() error {
+	f.cancel()
 	for id := range f.blocks.m { // explicitly clean the tracked blocks.
 		delete(f.blocks.m, id)
 	}

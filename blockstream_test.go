@@ -25,7 +25,7 @@ func TestBlockStream(t *testing.T) {
 
 	bs, cids := randBlockstore(t, rand.Reader, blocksCount, size)
 
-	net, err := mocknet.FullMeshConnected(ctx, 5)
+	net, err := mocknet.FullMeshConnected(ctx, nodesCount)
 	require.Nil(t, err, err)
 	hs := net.Hosts()
 
@@ -53,7 +53,7 @@ func TestBlockStream(t *testing.T) {
 			}
 
 			var er error
-			sessions[i], er = n.Session(ctx, peers, tkn)
+			sessions[i], er = n.Session(ctx, tkn, peers...)
 			if er != nil {
 				once.Do(func() {
 					err = er
