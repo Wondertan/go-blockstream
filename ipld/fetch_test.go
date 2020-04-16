@@ -30,7 +30,7 @@ func TestFetch(t *testing.T) {
 	emptystore := blockstore.NewBlockstore(sync.MutexWrap(datastore.NewMapDatastore()))
 
 	nd := dagFromReader(t, io.LimitReader(rand.Reader, rsize), &fakeAdder{fillstore}, nsize)
-	err := FetchAll(ctx, nd.Cid(), &fakeAdder{emptystore}, &offlineStreamer{getter: fillstore.Get})
+	err := FetchDAG(ctx, nd.Cid(), &offlineStreamer{getter: fillstore.Get}, &fakeAdder{emptystore})
 	require.Nil(t, err, err)
 
 	ids, err := fillstore.AllKeysChan(ctx)
