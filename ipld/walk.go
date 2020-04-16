@@ -11,9 +11,25 @@ import (
 
 type Visitor func(format.Node) error
 
+type WalkOption func(*walkOptions)
+
+func Visit(codec uint64, visit Visitor) WalkOption {
+	return func(wo *walkOptions) {
+		wo.visitors[codec] = visit
+	}
+}
+
+func VisitAll(visit Visitor) WalkOption {
+	return func(wo *walkOptions) {
+		wo.all = visit
+	}
+}
+
 // Walk traverses the DAG from given root visiting all the nodes with the Visitor.
 // Calling visitor is thread safe.
-func Walk(ctx context.Context, id cid.Cid, bs blockstream.BlockStreamer, visit Visitor) error {
+func Walk(ctx context.Context, id cid.Cid, bs blockstream.BlockStreamer, opts ...WalkOption) error {
+	wo := options(opts)
+
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -33,9 +49,19 @@ func Walk(ctx context.Context, id cid.Cid, bs blockstream.BlockStreamer, visit V
 				return err
 			}
 
-			err = visit(nd)
-			if err != nil {
-				return err
+			visit, ok := wo.visitors[nd.Cid().Type()]
+			if ok {
+				err = visit(nd)
+				if err != nil {
+					return err
+				}
+			}
+
+			if wo.all != nil {
+				err = wo.all(nd)
+				if err != nil {
+					return err
+				}
 			}
 
 			ls := nd.Links()
@@ -66,4 +92,19 @@ func linksToCids(ls []*format.Link) []cid.Cid {
 	}
 
 	return ids
+}
+
+type walkOptions struct {
+	all      Visitor
+	visitors map[uint64]Visitor
+}
+
+func options(opts []WalkOption) *walkOptions {
+	wo := &walkOptions{
+		visitors: make(map[uint64]Visitor),
+	}
+	for _, opt := range opts {
+		opt(wo)
+	}
+	return wo
 }
