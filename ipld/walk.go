@@ -9,25 +9,30 @@ import (
 	"github.com/Wondertan/go-blockstream"
 )
 
-type Visitor func(format.Node) error
+type (
+	// Handler is used to handle node in user defined way.
+	Handler func(format.Node) error
 
-type WalkOption func(*walkOptions)
+	// Visitor checks whenever node should be fetched and handled.
+	Visitor func(cid.Cid) (bool, error)
+)
 
-func Visit(codec uint64, visit Visitor) WalkOption {
-	return func(wo *walkOptions) {
-		wo.visitors[codec] = visit
+// Visit applies Visitor to check if specified node should be handled.
+func Visit(visitor Visitor) walkOption {
+	return func(w *walkOptions) {
+		w.visitor = visitor
 	}
 }
 
-func VisitAll(visit Visitor) WalkOption {
+// Handle applies custom Handler for specific node type.
+func Handle(codec uint64, handle Handler) walkOption {
 	return func(wo *walkOptions) {
-		wo.all = visit
+		wo.handlers[codec] = handle
 	}
 }
 
-// Walk traverses the DAG from given root visiting all the nodes with the Visitor.
-// Calling visitor is thread safe.
-func Walk(ctx context.Context, id cid.Cid, bs blockstream.BlockStreamer, opts ...WalkOption) error {
+// Walk traverses the DAG from given root passing all the nodes to the Handler.
+func Walk(ctx context.Context, id cid.Cid, bs blockstream.BlockStreamer, handler Handler, opts ...walkOption) error {
 	wo := options(opts)
 
 	ctx, cancel := context.WithCancel(ctx)
@@ -37,6 +42,23 @@ func Walk(ctx context.Context, id cid.Cid, bs blockstream.BlockStreamer, opts ..
 	in := make(chan []cid.Cid, 1)
 	in <- []cid.Cid{id}
 	defer close(in)
+
+	handle := func(nd format.Node) error {
+		custom, ok := wo.handlers[nd.Cid().Type()]
+		if ok {
+			return custom(nd)
+		}
+
+		return handler(nd)
+	}
+
+	visit := func(cid cid.Cid) (bool, error) {
+		if wo.visitor != nil {
+			return wo.visitor(cid)
+		}
+
+		return true, nil
+	}
 
 	out := bs.Stream(ctx, in)
 	for {
@@ -49,33 +71,35 @@ func Walk(ctx context.Context, id cid.Cid, bs blockstream.BlockStreamer, opts ..
 				return err
 			}
 
-			visit, ok := wo.visitors[nd.Cid().Type()]
-			if ok {
-				err = visit(nd)
-				if err != nil {
-					return err
-				}
-			}
-
-			if wo.all != nil {
-				err = wo.all(nd)
-				if err != nil {
-					return err
-				}
+			err = handle(nd)
+			if err != nil {
+				return err
 			}
 
 			ls := nd.Links()
-			ll := len(ls)
-			if ll == 0 {
+			if len(ls) == 0 {
 				if remains == 0 {
 					return nil
 				}
 				continue
 			}
-			remains += ll
+
+			ids := make([]cid.Cid, 0, len(ls))
+			for _, l := range ls {
+				v, err := visit(l.Cid)
+				if err != nil {
+					return err
+				}
+				if !v {
+					continue
+				}
+
+				ids = append(ids, l.Cid)
+			}
+			remains += len(ids)
 
 			select {
-			case in <- linksToCids(ls):
+			case in <- ids:
 			case <-ctx.Done():
 				return ctx.Err()
 			}
@@ -85,23 +109,16 @@ func Walk(ctx context.Context, id cid.Cid, bs blockstream.BlockStreamer, opts ..
 	}
 }
 
-func linksToCids(ls []*format.Link) []cid.Cid {
-	ids := make([]cid.Cid, len(ls))
-	for i, l := range ls {
-		ids[i] = l.Cid
-	}
-
-	return ids
-}
+type walkOption func(*walkOptions)
 
 type walkOptions struct {
-	all      Visitor
-	visitors map[uint64]Visitor
+	handlers map[uint64]Handler
+	visitor  Visitor
 }
 
-func options(opts []WalkOption) *walkOptions {
+func options(opts []walkOption) *walkOptions {
 	wo := &walkOptions{
-		visitors: make(map[uint64]Visitor),
+		handlers: make(map[uint64]Handler),
 	}
 	for _, opt := range opts {
 		opt(wo)
