@@ -2,12 +2,12 @@ syntax = "proto3";
 
 package pb;
 
-message Message {
+message BlockStream {
 
     enum Type {
-        REQ = 0;
-        RESP = 1;
-        HS = 3;
+        REQUEST = 0;
+        RESPONSE = 1;
+        HANDSHAKE = 3;
     }
 
     Type type = 1; // Message type.

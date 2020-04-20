@@ -54,7 +54,7 @@ func checkHand(rw io.ReadWriter, check onToken) (access.Token, error) {
 }
 
 func writeToken(w io.Writer, token access.Token) error {
-	_, err := serde.Write(w, &pb.Message{Type: pb.Message_REQ, Token: string(token)})
+	_, err := serde.Write(w, &pb.BlockStream{Type: pb.HANDSHAKE, Token: string(token)})
 	if err != nil {
 		return fmt.Errorf("can't write token: %w", err)
 	}
@@ -63,17 +63,21 @@ func writeToken(w io.Writer, token access.Token) error {
 }
 
 func readToken(r io.Reader) (access.Token, error) {
-	msg := new(pb.Message)
+	msg := new(pb.BlockStream)
 	_, err := serde.Read(r, msg)
 	if err != nil {
 		return "", fmt.Errorf("can't read token: %w", err)
+	}
+
+	if msg.Type != pb.HANDSHAKE {
+		return "nil", fmt.Errorf("unexpected message type - %s", msg.Type)
 	}
 
 	return access.Token(msg.Token), nil
 }
 
 func writeBlocksReq(w io.Writer, ids []cid.Cid) error {
-	req := &pb.Message{Type: pb.Message_REQ, Cids: make([][]byte, len(ids))}
+	req := &pb.BlockStream{Type: pb.REQUEST, Cids: make([][]byte, len(ids))}
 	for i, id := range ids {
 		req.Cids[i] = id.Bytes()
 	}
@@ -87,13 +91,13 @@ func writeBlocksReq(w io.Writer, ids []cid.Cid) error {
 }
 
 func readBlocksReq(r io.Reader) ([]cid.Cid, error) {
-	msg := new(pb.Message)
+	msg := new(pb.BlockStream)
 	_, err := serde.Read(r, msg)
 	if err != nil {
 		return nil, fmt.Errorf("can't read blocks request: %w", err)
 	}
 
-	if msg.Type != pb.Message_REQ {
+	if msg.Type != pb.REQUEST {
 		return nil, fmt.Errorf("unexpected message type - %s", msg.Type)
 	}
 
@@ -109,7 +113,7 @@ func readBlocksReq(r io.Reader) ([]cid.Cid, error) {
 }
 
 func writeBlocksResp(rw io.ReadWriter, bs []blocks.Block) error {
-	msg := &pb.Message{Type: pb.Message_RESP, Blocks: make([][]byte, len(bs))}
+	msg := &pb.BlockStream{Type: pb.RESPONSE, Blocks: make([][]byte, len(bs))}
 	for i, b := range bs {
 		msg.Blocks[i] = b.RawData()
 	}
@@ -123,13 +127,13 @@ func writeBlocksResp(rw io.ReadWriter, bs []blocks.Block) error {
 }
 
 func readBlocksResp(rw io.ReadWriter, ids []cid.Cid) ([]blocks.Block, error) {
-	msg := new(pb.Message)
+	msg := new(pb.BlockStream)
 	_, err := serde.Read(rw, msg)
 	if err != nil {
 		return nil, fmt.Errorf("can't read blocks response: %w", err)
 	}
 
-	if msg.Type != pb.Message_RESP {
+	if msg.Type != pb.RESPONSE {
 		return nil, fmt.Errorf("unexpected message type - %s", msg.Type)
 	}
 
