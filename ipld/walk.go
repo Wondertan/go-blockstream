@@ -31,9 +31,16 @@ func Handle(codec uint64, handle Handler) walkOption {
 	}
 }
 
+// NoDedup forces Walk to request and handle nodes more than once if they are already passed through.
+func NoDedup() walkOption {
+	return func(wo *walkOptions) {
+		wo.dedup = nil
+	}
+}
+
 // Walk traverses the DAG from given root passing all the nodes to the Handler.
 func Walk(ctx context.Context, id cid.Cid, bs blockstream.BlockStreamer, handler Handler, opts ...walkOption) error {
-	wo := options(opts)
+	wo := options(handler, opts)
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -42,23 +49,6 @@ func Walk(ctx context.Context, id cid.Cid, bs blockstream.BlockStreamer, handler
 	in := make(chan []cid.Cid, 1)
 	in <- []cid.Cid{id}
 	defer close(in)
-
-	handle := func(nd format.Node) error {
-		custom, ok := wo.handlers[nd.Cid().Type()]
-		if ok {
-			return custom(nd)
-		}
-
-		return handler(nd)
-	}
-
-	visit := func(cid cid.Cid) (bool, error) {
-		if wo.visitor != nil {
-			return wo.visitor(cid)
-		}
-
-		return true, nil
-	}
 
 	out := bs.Stream(ctx, in)
 	for {
@@ -71,7 +61,7 @@ func Walk(ctx context.Context, id cid.Cid, bs blockstream.BlockStreamer, handler
 				return err
 			}
 
-			err = handle(nd)
+			err = wo.handle(nd)
 			if err != nil {
 				return err
 			}
@@ -86,7 +76,7 @@ func Walk(ctx context.Context, id cid.Cid, bs blockstream.BlockStreamer, handler
 
 			ids := make([]cid.Cid, 0, len(ls))
 			for _, l := range ls {
-				v, err := visit(l.Cid)
+				v, err := wo.visit(l.Cid)
 				if err != nil {
 					return err
 				}
@@ -112,16 +102,42 @@ func Walk(ctx context.Context, id cid.Cid, bs blockstream.BlockStreamer, handler
 type walkOption func(*walkOptions)
 
 type walkOptions struct {
-	handlers map[uint64]Handler
+	dedup    *cid.Set
 	visitor  Visitor
+	handlers map[uint64]Handler
+	main     Handler
 }
 
-func options(opts []walkOption) *walkOptions {
+func options(main Handler, opts []walkOption) *walkOptions {
 	wo := &walkOptions{
+		dedup:    cid.NewSet(),
 		handlers: make(map[uint64]Handler),
+		main:     main,
 	}
 	for _, opt := range opts {
 		opt(wo)
 	}
 	return wo
+}
+
+func (wo *walkOptions) handle(nd format.Node) error {
+	custom, ok := wo.handlers[nd.Cid().Type()]
+	if ok {
+		return custom(nd)
+	}
+
+	return wo.main(nd)
+}
+
+func (wo *walkOptions) visit(id cid.Cid) (bool, error) {
+	if wo.dedup != nil && wo.dedup.Has(id) {
+		return false, nil
+	}
+
+	wo.dedup.Add(id)
+	if wo.visitor != nil {
+		return wo.visitor(id)
+	}
+
+	return true, nil
 }

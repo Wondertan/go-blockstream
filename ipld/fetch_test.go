@@ -49,15 +49,33 @@ func TestFetchAbsent(t *testing.T) {
 	fillstore := blockstore.NewBlockstore(sync.MutexWrap(datastore.NewMapDatastore()))
 	halfstore := blockstore.NewBlockstore(sync.MutexWrap(datastore.NewMapDatastore()))
 
-	nd1 := dagFromReader(t, io.LimitReader(rand.Reader, rsize), &fakeAdder{fillstore}, nsize)
+	lv1 := dagFromReader(t, io.LimitReader(rand.Reader, rsize), &fakeAdder{fillstore}, nsize)
 	copyBlockstore(t, ctx, fillstore, halfstore)
-	nd2 := dagFromReader(t, io.LimitReader(rand.Reader, rsize), &fakeAdder{fillstore}, nsize)
-	nd3 := dagFromReader(t, io.LimitReader(rand.Reader, rsize), &fakeAdder{fillstore}, nsize)
+	lv2 := dagFromReader(t, io.LimitReader(rand.Reader, rsize), &fakeAdder{fillstore}, nsize)
+	lv3 := dagFromReader(t, io.LimitReader(rand.Reader, rsize), &fakeAdder{fillstore}, nsize)
+
+	n1 := merkledag.NodeWithData([]byte{1})
+	n1.AddNodeLink("1", lv1)
+	n1.AddNodeLink("2", lv2)
+	n1.AddNodeLink("3", lv3)
+	fillstore.Put(n1)
+
+	n2 := merkledag.NodeWithData([]byte{2})
+	n2.AddNodeLink("1", lv1)
+	n2.AddNodeLink("2", lv2)
+	n2.AddNodeLink("3", lv3)
+	fillstore.Put(n2)
+
+	n3 := merkledag.NodeWithData([]byte{3})
+	n3.AddNodeLink("1", lv1)
+	n3.AddNodeLink("2", lv2)
+	n3.AddNodeLink("3", lv3)
+	fillstore.Put(n3)
 
 	root := merkledag.NodeWithData(nil)
-	root.AddNodeLink("1", nd1)
-	root.AddNodeLink("2", nd2)
-	root.AddNodeLink("3", nd3)
+	root.AddNodeLink("1", n1)
+	root.AddNodeLink("2", n2)
+	root.AddNodeLink("3", n3)
 	fillstore.Put(root)
 
 	s := &offlineStreamer{getter: fillstore.Get}
@@ -68,7 +86,7 @@ func TestFetchAbsent(t *testing.T) {
 	assertEqualBlockstore(t, ctx, halfstore, fillstore)
 
 	for _, id := range s.streamed {
-		if id.Equals(nd1.Cid()) {
+		if id.Equals(lv1.Cid()) {
 			t.Fatal("streamed existed blocks")
 		}
 	}
