@@ -154,6 +154,10 @@ func (f *Session) Stream(ctx context.Context, idch <-chan []cid.Cid) <-chan bloc
 				}
 
 				ids = f.tracked(ids, &buf) // TODO Prevent blocks being requested twice in all cases.
+				if len(ids) == 0 {
+					continue
+				}
+
 				for prv, ids := range f.distribute(ids) {
 					err := prv.receive(ctx, ids, in)
 					if err != nil {
@@ -179,13 +183,13 @@ func (f *Session) Blocks(ctx context.Context, ids []cid.Cid) <-chan blocks.Block
 	var trkd []blocks.Block
 	ids = f.tracked(ids, &trkd)
 	remains := len(ids)
-	out := make(chan blocks.Block, len(ids))
+	out := make(chan blocks.Block, len(trkd))
+	for _, b := range trkd {
+		out <- b
+	}
 	if remains == 0 {
 		close(out)
 		return out
-	}
-	for _, b := range trkd {
-		out <- b
 	}
 
 	go func() {
@@ -271,6 +275,10 @@ func (f *Session) tracked(in []cid.Cid, bs *[]blocks.Block) (out []cid.Cid) {
 	defer f.blocks.l.RUnlock()
 
 	for _, id := range in {
+		if !id.Defined() {
+			continue
+		}
+
 		b, ok := f.blocks.m[id]
 		if ok {
 			*bs = append(*bs, b)

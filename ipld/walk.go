@@ -66,16 +66,8 @@ func Walk(ctx context.Context, id cid.Cid, bs blockstream.BlockStreamer, handler
 				return err
 			}
 
-			ls := nd.Links()
-			if len(ls) == 0 {
-				if remains == 0 {
-					return nil
-				}
-				continue
-			}
-
-			ids := make([]cid.Cid, 0, len(ls))
-			for _, l := range ls {
+			ids := make([]cid.Cid, 0, len(nd.Links()))
+			for _, l := range nd.Links() {
 				v, err := wo.visit(l.Cid)
 				if err != nil {
 					return err
@@ -85,6 +77,13 @@ func Walk(ctx context.Context, id cid.Cid, bs blockstream.BlockStreamer, handler
 				}
 
 				ids = append(ids, l.Cid)
+			}
+
+			if len(ids) == 0 {
+				if remains == 0 {
+					return nil
+				}
+				continue
 			}
 			remains += len(ids)
 
