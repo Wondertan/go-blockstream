@@ -172,7 +172,7 @@ type offlineStreamer struct {
 }
 
 func (f *offlineStreamer) Stream(ctx context.Context, ids <-chan []cid.Cid) <-chan blocks.Block {
-	out := make(chan blocks.Block)
+	out := make(chan blocks.Block, 500)
 	go func() {
 		defer close(out)
 		for {

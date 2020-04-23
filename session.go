@@ -11,6 +11,7 @@ import (
 	"github.com/ipfs/go-cid"
 )
 
+const streamBufferSize = 32 // TODO Allow customizing the value
 const timeout = time.Minute * 15
 
 type Session struct {
@@ -58,15 +59,18 @@ func newSession(
 	}, nil
 }
 
+// TODO Refactor
 // Stream starts direct block fetching from remote providers. It fetches the blocks requested with 'in' chan by their ids.
 // Stream is automatically stopped when both: the requested blocks are all fetched and 'in' chan is closed.
 // It might be also stopped by force with the provided context.
-// Order is not guaranteed.
-func (f *Session) Stream(ctx context.Context, in <-chan []cid.Cid) <-chan blocks.Block {
-	remains := 0
-	out := make(chan blocks.Block)
+// Block order is not guaranteed in case of multiple providers.
+// Does not request blocks if they are already requested/received.
+func (f *Session) Stream(ctx context.Context, idch <-chan []cid.Cid) <-chan blocks.Block {
+	out := make(chan blocks.Block, streamBufferSize)
 
 	go func() {
+		remains := 0
+
 		defer func() {
 			close(out)
 			if remains != 0 {
@@ -74,42 +78,85 @@ func (f *Session) Stream(ctx context.Context, in <-chan []cid.Cid) <-chan blocks
 			}
 		}()
 
-		buf := make(chan blocks.Block, 8)
+		buf := make([]blocks.Block, 0, streamBufferSize)
+
+		out := func() chan<- blocks.Block {
+			if len(buf) > 0 {
+				return out
+			}
+
+			return nil
+		}
+
+		block := func() blocks.Block {
+			if len(buf) > 0 {
+				return buf[0]
+			}
+
+			return nil
+		}
+
+		write := func() bool {
+		write:
+			for {
+				select {
+				case out() <- block():
+					remains--
+					buf = buf[1:]
+				case <-ctx.Done(): // Only care about Stream context here.
+					return true
+				default:
+					break write
+				}
+			}
+
+			return remains == 0 && idch == nil
+		}
+
+		in := make(chan blocks.Block, streamBufferSize)
+		read := func() {
+		read:
+			for {
+				select {
+				case b := <-in:
+					f.trackBlock(b)
+					buf = append(buf, b)
+				default:
+					break read
+				}
+			}
+		}
+
 		for {
 			select {
-			case b := <-buf:
-				f.trackBlock(b)
-				select {
-				case out <- b:
-					remains--
-					if remains == 0 && in == nil {
-						return
-					}
-				case <-ctx.Done(): // Only care about Stream context here.
+			case out() <- block():
+				remains--
+				buf = buf[1:]
+				if write() {
 					return
 				}
-			case ids, ok := <-in:
+			case b := <-in:
+				f.trackBlock(b)
+				buf = append(buf, b)
+
+				read()
+				if write() {
+					return
+				}
+			case ids, ok := <-idch:
 				if !ok {
 					if remains != 0 {
-						in = nil
+						idch = nil
 						continue
 					} else {
 						return
 					}
 				}
 
-				trkd, ids := f.tracked(ids)
+				ids = f.tracked(ids, &buf) // TODO Prevent blocks being requested twice in all cases.
 				for prv, ids := range f.distribute(ids) {
-					err := prv.receive(ctx, ids, buf)
+					err := prv.receive(ctx, ids, in)
 					if err != nil {
-						return
-					}
-				}
-
-				for _, b := range trkd {
-					select {
-					case out <- b:
-					case <-ctx.Done():
 						return
 					}
 				}
@@ -127,13 +174,18 @@ func (f *Session) Stream(ctx context.Context, in <-chan []cid.Cid) <-chan blocks
 }
 
 // Blocks fetches blocks by their ids from the providers in the session.
+// Order is not guaranteed.
 func (f *Session) Blocks(ctx context.Context, ids []cid.Cid) <-chan blocks.Block {
-	trkd, ids := f.tracked(ids)
+	var trkd []blocks.Block
+	ids = f.tracked(ids, &trkd)
 	remains := len(ids)
-	out := make(chan blocks.Block)
+	out := make(chan blocks.Block, len(ids))
 	if remains == 0 {
 		close(out)
 		return out
+	}
+	for _, b := range trkd {
+		out <- b
 	}
 
 	go func() {
@@ -146,25 +198,17 @@ func (f *Session) Blocks(ctx context.Context, ids []cid.Cid) <-chan blocks.Block
 			}
 		}()
 
-		buf := make(chan blocks.Block, len(ids))
+		in := make(chan blocks.Block, remains/2)
 		for prv, ids := range f.distribute(ids) {
-			err := prv.receive(ctx, ids, buf)
+			err := prv.receive(ctx, ids, in)
 			if err != nil {
-				return
-			}
-		}
-
-		for _, b := range trkd {
-			select {
-			case out <- b:
-			case <-ctx.Done():
 				return
 			}
 		}
 
 		for {
 			select {
-			case b := <-buf:
+			case b := <-in:
 				f.trackBlock(b)
 				select {
 				case out <- b:
@@ -222,14 +266,14 @@ func (f *Session) trackBlock(b blocks.Block) {
 	f.blocks.m[b.Cid()] = b
 }
 
-func (f *Session) tracked(in []cid.Cid) (bs []blocks.Block, out []cid.Cid) {
+func (f *Session) tracked(in []cid.Cid, bs *[]blocks.Block) (out []cid.Cid) {
 	f.blocks.l.RLock()
 	defer f.blocks.l.RUnlock()
 
 	for _, id := range in {
 		b, ok := f.blocks.m[id]
 		if ok {
-			bs = append(bs, b)
+			*bs = append(*bs, b)
 		} else {
 			out = append(out, id)
 		}
