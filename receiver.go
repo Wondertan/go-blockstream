@@ -171,6 +171,7 @@ func (rcv *receiver) handleRead(r *read) error {
 			case r.out <- b:
 			case <-r.ctx.Done():
 				// it is still required to read the whole request out, even the context is canceled.
+				// TODO Some canceling signal is required for the other side.
 			}
 		}
 
