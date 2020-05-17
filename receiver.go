@@ -153,8 +153,7 @@ type read struct {
 
 // handleRead iteratively reads requested blocks from the fakeStream and sends them to out channel.
 func (rcv *receiver) handleRead(r *read) error {
-	received := 0
-	expected := len(r.ids)
+	expected, received := len(r.ids), 0
 	for {
 		bs, err := readBlocksResp(rcv.rwc, r.ids[received:])
 		if err != nil {

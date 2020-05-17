@@ -68,16 +68,48 @@ func newSession(
 // Block order is not guaranteed in case of multiple providers.
 // Does not request blocks if they are already requested/received.
 func (ses *Session) Stream(ctx context.Context, idch <-chan []cid.Cid) <-chan blocks.Block {
-	return newStream(ctx, idch, ses, streamBufferSize, streamBufferLimit).out
+	buf := newBuffer(ctx, streamBufferSize, streamBufferLimit)
+	go func() {
+		defer close(buf.Order())
+		for {
+			select {
+			case ids, ok := <-idch:
+				if !ok {
+					return
+				}
+
+				select {
+				case buf.Order() <- ids:
+				case <-ctx.Done():
+					return
+				}
+
+				err := ses.receive(ctx, ids, buf.Input())
+				if err != nil {
+					return
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	return buf.Output()
 }
 
 // Blocks fetches blocks by their ids from the providers in the session.
 // Order is not guaranteed.
 func (ses *Session) Blocks(ctx context.Context, ids []cid.Cid) <-chan blocks.Block {
-	ch := make(chan []cid.Cid, 1)
-	ch <- ids
-	close(ch)
-	return newStream(ctx, ch, ses, len(ids), len(ids)).out
+	buf := newBuffer(ctx, len(ids), len(ids))
+	buf.Order() <- ids
+	close(buf.Order())
+
+	err := ses.receive(ctx, ids, buf.Input())
+	if err != nil {
+		return nil
+	}
+
+	return buf.Output()
 }
 
 func (ses *Session) Close() error {
@@ -90,15 +122,14 @@ func (ses *Session) Close() error {
 }
 
 // receive requests providers in the session for ids and writes them to the chan.
-func (ses *Session) receive(ctx context.Context, ids []cid.Cid, buf *stream) error {
-	ids = ses.tracked(ids, &buf.buf) // TODO Prevent blocks being requested twice in all cases.
-	if len(ids) == 0 {
-		return nil
+func (ses *Session) receive(ctx context.Context, ids []cid.Cid, bs chan<- blocks.Block) error {
+	ids, err := ses.tracked(ctx, ids, bs) // TODO Prevent blocks being requested twice in all cases.
+	if len(ids) == 0 || err != nil {
+		return err
 	}
-	buf.remains += len(ids)
 
 	for prv, ids := range ses.distribute(ids) {
-		err := prv.receive(ctx, ids, buf.in)
+		err = prv.receive(ctx, ids, bs)
 		if err != nil {
 			return err
 		}
@@ -123,7 +154,7 @@ func (ses *Session) distribute(ids []cid.Cid) map[*receiver][]cid.Cid {
 }
 
 // tracked fills buffer with tracked blocks and returns ids remained to be fetched.
-func (ses *Session) tracked(in []cid.Cid, bs *[]blocks.Block) (out []cid.Cid) {
+func (ses *Session) tracked(ctx context.Context, in []cid.Cid, bs chan<- blocks.Block) (out []cid.Cid, err error) {
 	ses.blocks.l.RLock()
 	defer ses.blocks.l.RUnlock()
 
@@ -134,7 +165,11 @@ func (ses *Session) tracked(in []cid.Cid, bs *[]blocks.Block) (out []cid.Cid) {
 
 		b, ok := ses.blocks.m[id]
 		if ok {
-			*bs = append(*bs, b)
+			select {
+			case bs <- b:
+			case <-ctx.Done():
+				return out, ctx.Err()
+			}
 		} else {
 			out = append(out, id)
 		}
