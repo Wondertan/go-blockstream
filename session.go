@@ -70,7 +70,7 @@ func newSession(
 func (ses *Session) Stream(ctx context.Context, idch <-chan []cid.Cid) <-chan blocks.Block {
 	buf := newBuffer(ctx, streamBufferSize, streamBufferLimit)
 	go func() {
-		defer close(buf.Order())
+		defer buf.Close()
 		for {
 			select {
 			case ids, ok := <-idch:
@@ -78,13 +78,12 @@ func (ses *Session) Stream(ctx context.Context, idch <-chan []cid.Cid) <-chan bl
 					return
 				}
 
-				select {
-				case buf.Order() <- ids:
-				case <-ctx.Done():
+				err := buf.Order(ids...)
+				if err != nil {
 					return
 				}
 
-				err := ses.receive(ctx, ids, buf.Input())
+				err = ses.receive(ctx, ids, buf.Input())
 				if err != nil {
 					return
 				}
@@ -101,14 +100,14 @@ func (ses *Session) Stream(ctx context.Context, idch <-chan []cid.Cid) <-chan bl
 // Order is not guaranteed.
 func (ses *Session) Blocks(ctx context.Context, ids []cid.Cid) <-chan blocks.Block {
 	buf := newBuffer(ctx, len(ids), len(ids))
-	buf.Order() <- ids
-	close(buf.Order())
+	buf.Order(ids...) // won't error
 
 	err := ses.receive(ctx, ids, buf.Input())
 	if err != nil {
 		return nil
 	}
 
+	buf.Close() // won't error
 	return buf.Output()
 }
 
