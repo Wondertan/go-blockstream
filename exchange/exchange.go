@@ -71,7 +71,7 @@ func (f *fetcher) GetBlocks(ctx context.Context, ids []cid.Cid) (<-chan blocks.B
 		return nil, f.err
 	}
 
-	return f.ses.Blocks(ctx, ids), nil
+	return f.ses.Blocks(ctx, ids)
 }
 
 func getBlock(

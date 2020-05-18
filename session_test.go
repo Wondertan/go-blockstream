@@ -58,8 +58,11 @@ func TestSessionBlocks(t *testing.T) {
 	ses.addReceiver(rcv(t, ctx, tkn, bs, msgSize))
 	ses.addReceiver(rcv(t, ctx, tkn, bs, msgSize))
 
-	ch1 := ses.Blocks(ctx, ids[:count/2])
-	ch2 := ses.Blocks(ctx, ids[count/2:])
+	ch1, err := ses.Blocks(ctx, ids[:count/2])
+	require.Nil(t, err, err)
+
+	ch2, err := ses.Blocks(ctx, ids[count/2:])
+	require.Nil(t, err, err)
 
 	assertChan(t, ch1, bs, count/2)
 	assertChan(t, ch2, bs, count/2)

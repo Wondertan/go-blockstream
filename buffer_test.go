@@ -14,7 +14,7 @@ func TestBufferDynamic(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	buf := newBuffer(ctx, 8, 256)
+	buf := NewBuffer(ctx, 8, 256)
 	defer buf.Close()
 
 	bs, ids := randBlocks(t, rand.Reader, 256, 256)
@@ -41,56 +41,71 @@ func TestBufferOrder(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	buf := newBuffer(ctx, 32, 32)
+	buf := NewBuffer(ctx, 32, 32)
+	defer buf.Close()
 	bs, ids := randBlocks(t, rand.Reader, 32, 256)
-	err := buf.Order(ids[:16]...)
-	require.Nil(t, err, err)
 
 	go func() {
-		err := buf.Order(ids[16:]...)
+		// define order in new routine
+		err := buf.Order(ids...)
 		require.Nil(t, err, err)
 
-		err = buf.Close()
-		require.Nil(t, err, err)
-	}()
-
-	go func() {
-		for i := len(bs) - 1; i >= 0; i-- { // send blocks in reverse
+		// send blocks in reverse
+		for i := len(bs) - 1; i >= 0; i-- {
 			buf.Input() <- bs[i]
 		}
 	}()
 
-	var i int
-	for b := range buf.Output() {
-		assert.Equal(t, ids[i], b.Cid()) // check original order
-		i++
+	// check requested order
+	for i := 0; i < len(bs)-1; i++ {
+		select {
+		case b := <-buf.Output():
+			assert.Equal(t, ids[i], b.Cid())
+		}
 	}
-	assert.Equal(t, len(bs), i)
+	assert.Equal(t, buf.order.Len(), uint32(0))
 }
 
 func TestBufferClosing(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	bs, ids := randBlocks(t, rand.Reader, 1, 256)
 
-	buf := newBuffer(ctx, 32, 32)
-	err := buf.Order(ids...)
-	require.Nil(t, err, err)
+	t.Run("WithClose", func(t *testing.T) {
+		buf := NewBuffer(ctx, 32, 32)
+		err := buf.Order(ids...)
+		require.Nil(t, err, err)
 
-	err = buf.Close()
-	require.Nil(t, err, err)
+		err = buf.Close()
+		require.Nil(t, err, err)
 
-	buf.Input() <- bs[0]
-	for b := range buf.Output() { // check that outputs one block and is closed after Order is closed
-		assert.Equal(t, bs[0], b)
-	}
+		buf.Input() <- bs[0]
+		for b := range buf.Output() { // check that still outputs block and closes Output
+			assert.Equal(t, bs[0], b)
+		}
+	})
 
-	buf = newBuffer(ctx, 32, 32)
-	err = buf.Order(ids...)
-	require.Nil(t, err, err)
+	t.Run("WithInput", func(t *testing.T) {
+		buf := NewBuffer(ctx, 32, 32)
 
-	// check that closing context terminates Buffer
-	buf.Input() <- bs[0]
-	cancel()
-	_, ok := <-buf.Output()
-	assert.False(t, ok)
+		err := buf.Order(ids...)
+		require.Nil(t, err, err)
+
+		buf.Input() <- bs[0]
+		close(buf.Input())
+
+		for b := range buf.Output() { // check that still outputs block and closes Output
+			assert.Equal(t, bs[0], b)
+		}
+	})
+
+	t.Run("WithContext", func(t *testing.T) {
+		buf := NewBuffer(ctx, 32, 32)
+		err := buf.Order(ids...)
+		require.Nil(t, err, err)
+
+		// check that closing context terminates Buffer
+		cancel()
+		_, ok := <-buf.Output()
+		assert.False(t, ok)
+	})
 }

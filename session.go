@@ -68,9 +68,16 @@ func newSession(
 // Block order is not guaranteed in case of multiple providers.
 // Does not request blocks if they are already requested/received.
 func (ses *Session) Stream(ctx context.Context, idch <-chan []cid.Cid) <-chan blocks.Block {
-	buf := newBuffer(ctx, streamBufferSize, streamBufferLimit)
+	buf := NewBuffer(ctx, streamBufferSize, streamBufferLimit)
 	go func() {
-		defer buf.Close()
+		var err error
+		defer func() {
+			buf.Close()
+			if err != nil {
+				log.Error(err)
+			}
+		}()
+
 		for {
 			select {
 			case ids, ok := <-idch:
@@ -78,7 +85,7 @@ func (ses *Session) Stream(ctx context.Context, idch <-chan []cid.Cid) <-chan bl
 					return
 				}
 
-				err := buf.Order(ids...)
+				err = buf.Order(ids...)
 				if err != nil {
 					return
 				}
@@ -98,17 +105,20 @@ func (ses *Session) Stream(ctx context.Context, idch <-chan []cid.Cid) <-chan bl
 
 // Blocks fetches blocks by their ids from the providers in the session.
 // Order is not guaranteed.
-func (ses *Session) Blocks(ctx context.Context, ids []cid.Cid) <-chan blocks.Block {
-	buf := newBuffer(ctx, len(ids), len(ids))
-	buf.Order(ids...) // won't error
+func (ses *Session) Blocks(ctx context.Context, ids []cid.Cid) (<-chan blocks.Block, error) {
+	buf := NewBuffer(ctx, len(ids), len(ids))
 
-	err := ses.receive(ctx, ids, buf.Input())
+	err := buf.Order(ids...)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 
-	buf.Close() // won't error
-	return buf.Output()
+	err = ses.receive(ctx, ids, buf.Input())
+	if err != nil {
+		return nil, err
+	}
+
+	return buf.Output(), buf.Close()
 }
 
 func (ses *Session) Close() error {

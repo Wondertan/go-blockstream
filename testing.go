@@ -1,6 +1,7 @@
 package blockstream
 
 import (
+	"fmt"
 	"io"
 	"testing"
 
@@ -49,6 +50,7 @@ func assertChan(t *testing.T, ch <-chan blocks.Block, bs blockstore.Blockstore, 
 		assert.Nil(t, err, err)
 		assert.True(t, ok)
 		actual++
+		fmt.Println(actual)
 	}
 	assert.Equal(t, expected, actual)
 }
