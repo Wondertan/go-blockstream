@@ -7,6 +7,8 @@ import (
 	"sync"
 
 	"github.com/Wondertan/go-libp2p-access"
+	"github.com/ipfs/go-datastore"
+	dsync "github.com/ipfs/go-datastore/sync"
 	"github.com/ipfs/go-ipfs-blockstore"
 	logging "github.com/ipfs/go-log"
 	"github.com/libp2p/go-libp2p-core/host"
@@ -38,23 +40,16 @@ type BlockStream struct {
 		wg sync.WaitGroup
 	}
 
-	put    putter
 	closed chan struct{}
 }
 
 type Option func(plain *BlockStream)
 
-func WithAutoSave() Option {
-	return func(bs *BlockStream) {
-		bs.put = bs.Blocks
-	}
-}
-
-func NewBlockStream(host host.Host, blocks blockstore.Blockstore, granter access.Granter, opts ...Option) *BlockStream {
+func NewBlockStream(host host.Host, bstore blockstore.Blockstore, granter access.Granter, opts ...Option) *BlockStream {
 	bs := &BlockStream{
 		Host:    host,
 		Granter: granter,
-		Blocks:  blocks,
+		Blocks:  bstore,
 		sessions: struct {
 			m  map[access.Token]*Session
 			l  sync.Mutex
@@ -65,7 +60,6 @@ func NewBlockStream(host host.Host, blocks blockstore.Blockstore, granter access
 			l  sync.Mutex
 			wg sync.WaitGroup
 		}{m: make(map[access.Token]*sender)},
-		put:    &nilPutter{},
 		closed: make(chan struct{}),
 	}
 	for _, opt := range opts {
@@ -92,8 +86,10 @@ func (bs *BlockStream) Close() error {
 	return nil
 }
 
-// Session starts new BlockStream session between current node and providing 'peers' within the Token namespace.
-func (bs *BlockStream) Session(ctx context.Context, token access.Token, peers ...peer.ID) (ses *Session, err error) {
+// TODO Define opts.
+// Session starts new BlockStream session between current node and providing 'peers' within the `token` namespace.
+// Autosave defines if received Blocks should be automatically put into Blockstore.
+func (bs *BlockStream) Session(ctx context.Context, token access.Token, autosave bool, peers ...peer.ID) (ses *Session, err error) {
 	if bs.isClosed() {
 		return nil, errClosed
 	}
@@ -106,8 +102,16 @@ func (bs *BlockStream) Session(ctx context.Context, token access.Token, peers ..
 		}
 	}
 
-	ses, err = newSession(ctx,
-		bs.put,
+	var store blockstore.Blockstore
+	if autosave {
+		store = bs.Blocks
+	} else {
+		store = newBlockstore()
+	}
+
+	ses, err = newSession(
+		ctx,
+		store,
 		streams,
 		token,
 		func(f func() error) {
@@ -182,3 +186,7 @@ func (bs *BlockStream) isClosed() bool {
 
 type onToken func(access.Token) error
 type onClose func(func() error)
+
+func newBlockstore() blockstore.Blockstore {
+	return blockstore.NewBlockstore(dsync.MutexWrap(datastore.NewMapDatastore()))
+}

@@ -55,7 +55,7 @@ func TestBlockStream(t *testing.T) {
 			}
 
 			var er error
-			sessions[i], er = n.Session(ctx, tkn, peers...)
+			sessions[i], er = n.Session(ctx, tkn, false, peers...)
 			if er != nil {
 				once.Do(func() {
 					err = er

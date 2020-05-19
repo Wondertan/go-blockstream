@@ -1,20 +1,17 @@
 package blockstream
 
 import (
-	"fmt"
 	"io"
 	"testing"
 
 	"github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
-	"github.com/ipfs/go-datastore"
-	"github.com/ipfs/go-datastore/sync"
 	"github.com/ipfs/go-ipfs-blockstore"
 	"github.com/stretchr/testify/assert"
 )
 
 func randBlockstore(t *testing.T, rand io.Reader, count, size int) (blockstore.Blockstore, []cid.Cid) {
-	bstore := blockstore.NewBlockstore(sync.MutexWrap(datastore.NewMapDatastore()))
+	bstore := newBlockstore()
 	bs, ids := randBlocks(t, rand, count, size)
 	for _, b := range bs {
 		err := bstore.Put(b)
@@ -50,7 +47,6 @@ func assertChan(t *testing.T, ch <-chan blocks.Block, bs blockstore.Blockstore, 
 		assert.Nil(t, err, err)
 		assert.True(t, ok)
 		actual++
-		fmt.Println(actual)
 	}
 	assert.Equal(t, expected, actual)
 }
@@ -77,3 +73,11 @@ func (s *fakeStream) Write(b []byte) (n int, err error) {
 func (s *fakeStream) Close() error {
 	return s.write.Close()
 }
+
+type fakeTracker struct{}
+
+func (fakeTracker) PutMany([]blocks.Block) error { return nil }
+
+func (fakeTracker) GetSize(cid.Cid) (int, error) { return 0, nil }
+
+func (fakeTracker) Get(cid.Cid) (blocks.Block, error) { return nil, blockstore.ErrNotFound }

@@ -8,85 +8,80 @@ import (
 	"github.com/Wondertan/go-libp2p-access"
 	"github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
+	blockstore "github.com/ipfs/go-ipfs-blockstore"
 )
 
 const (
-	streamBufferSize  = 32
+	streamBufferSize  = 64
 	streamBufferLimit = 1024
 )
 
-// TODO Manage state with goroutine.
-// TODO Refactor tracking.
+// tracker tracks blocks within the session
+type tracker interface {
+	putter
+	getter
+}
+
 type Session struct {
 	ctx    context.Context
 	cancel context.CancelFunc
-
-	blocks struct {
-		m map[cid.Cid]blocks.Block
-		l sync.RWMutex
-	}
 
 	rcvrs struct {
 		s []*receiver
 		l sync.RWMutex
 	}
+
+	trk tracker
 }
 
 func newSession(
 	ctx context.Context,
-	put putter,
+	pg tracker,
 	rws []io.ReadWriteCloser,
 	t access.Token,
 	onErr func(func() error),
-) (_ *Session, err error) {
+) (ses *Session, err error) {
 	ctx, cancel := context.WithCancel(ctx)
-	rcvrs := make([]*receiver, len(rws))
-	for i, s := range rws {
-		rcvrs[i], err = newReceiver(ctx, put, s, t, onErr)
-		if err != nil {
-			return
-		}
-	}
-
-	return &Session{
+	ses = &Session{
 		ctx:    ctx,
 		cancel: cancel,
 		rcvrs: struct {
 			s []*receiver
 			l sync.RWMutex
-		}{s: rcvrs},
-		blocks: struct {
-			m map[cid.Cid]blocks.Block
-			l sync.RWMutex
-		}{m: make(map[cid.Cid]blocks.Block)},
-	}, nil
+		}{},
+		trk: pg,
+	}
+
+	ses.rcvrs.s = make([]*receiver, len(rws))
+	for i, s := range rws {
+		ses.rcvrs.s[i], err = newReceiver(ctx, pg, s, t, onErr)
+		if err != nil {
+			return
+		}
+	}
+
+	return
 }
 
-// Stream starts direct block fetching from remote providers. It fetches the blocks requested with 'in' chan by their ids.
+// Stream starts direct BBlock fetching from remote providers. It fetches the Blocks requested with 'in' chan by their ids.
 // Stream is automatically stopped when both: the requested blocks are all fetched and 'in' chan is closed.
-// It might be also stopped by force with the provided context.
-// Block order is not guaranteed in case of multiple providers.
-// Does not request blocks if they are already requested/received.
-func (ses *Session) Stream(ctx context.Context, idch <-chan []cid.Cid) <-chan blocks.Block {
+// It might be also terminated with the provided context.
+// Block order is guaranteed to be the same as requested through the `in` chan.
+func (ses *Session) Stream(ctx context.Context, in <-chan []cid.Cid) <-chan blocks.Block {
+	ctx, cancel := context.WithCancel(ctx)
 	buf := NewBuffer(ctx, streamBufferSize, streamBufferLimit)
 	go func() {
-		var err error
-		defer func() {
-			buf.Close()
-			if err != nil {
-				log.Error(err)
-			}
-		}()
-
+		defer buf.Close()
 		for {
 			select {
-			case ids, ok := <-idch:
+			case ids, ok := <-in:
 				if !ok {
 					return
 				}
 
-				err = buf.Order(ids...)
+				err := buf.Order(ids...)
 				if err != nil {
+					log.Error(err)
 					return
 				}
 
@@ -94,6 +89,9 @@ func (ses *Session) Stream(ctx context.Context, idch <-chan []cid.Cid) <-chan bl
 				if err != nil {
 					return
 				}
+			case <-ses.ctx.Done():
+				cancel()
+				return
 			case <-ctx.Done():
 				return
 			}
@@ -103,11 +101,19 @@ func (ses *Session) Stream(ctx context.Context, idch <-chan []cid.Cid) <-chan bl
 	return buf.Output()
 }
 
-// Blocks fetches blocks by their ids from the providers in the session.
-// Order is not guaranteed.
+// Blocks fetches Blocks by their CIDs evenly from the remote providers in the session.
+// Block order is guaranteed to be the same as requested.
 func (ses *Session) Blocks(ctx context.Context, ids []cid.Cid) (<-chan blocks.Block, error) {
-	buf := NewBuffer(ctx, len(ids), len(ids))
+	ctx, cancel := context.WithCancel(ctx)
+	go func() {
+		select {
+		case <-ses.ctx.Done(): // not to leak Buffer in case session context is closed
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
 
+	buf := NewBuffer(ctx, len(ids), len(ids))
 	err := buf.Order(ids...)
 	if err != nil {
 		return nil, err
@@ -121,24 +127,21 @@ func (ses *Session) Blocks(ctx context.Context, ids []cid.Cid) (<-chan blocks.Bl
 	return buf.Output(), buf.Close()
 }
 
+// Close ends session.
 func (ses *Session) Close() error {
 	ses.cancel()
-	for id := range ses.blocks.m { // explicitly clean the tracked blocks.
-		delete(ses.blocks.m, id)
-	}
-
 	return nil
 }
 
 // receive requests providers in the session for ids and writes them to the chan.
-func (ses *Session) receive(ctx context.Context, ids []cid.Cid, bs chan<- blocks.Block) error {
-	ids, err := ses.tracked(ctx, ids, bs) // TODO Prevent blocks being requested twice in all cases.
-	if len(ids) == 0 || err != nil {
+func (ses *Session) receive(ctx context.Context, in []cid.Cid, out chan<- blocks.Block) error {
+	in, err := ses.tracked(ctx, in, out)
+	if len(in) == 0 || err != nil {
 		return err
 	}
 
-	for prv, ids := range ses.distribute(ids) {
-		err = prv.receive(ctx, ids, bs)
+	for prv, ids := range ses.distribute(in) {
+		err = prv.receive(ctx, ids, out)
 		if err != nil {
 			return err
 		}
@@ -163,28 +166,32 @@ func (ses *Session) distribute(ids []cid.Cid) map[*receiver][]cid.Cid {
 }
 
 // tracked fills buffer with tracked blocks and returns ids remained to be fetched.
-func (ses *Session) tracked(ctx context.Context, in []cid.Cid, bs chan<- blocks.Block) (out []cid.Cid, err error) {
-	ses.blocks.l.RLock()
-	defer ses.blocks.l.RUnlock()
-
-	for _, id := range in {
+func (ses *Session) tracked(ctx context.Context, ids []cid.Cid, bs chan<- blocks.Block) ([]cid.Cid, error) {
+	n := 0
+	for _, id := range ids {
 		if !id.Defined() {
 			continue
 		}
 
-		b, ok := ses.blocks.m[id]
-		if ok {
+		b, err := ses.trk.Get(id)
+		switch err {
+		case blockstore.ErrNotFound:
+			ids[n] = id
+			n++
+		case nil:
 			select {
 			case bs <- b:
 			case <-ctx.Done():
-				return out, ctx.Err()
+				return nil, ctx.Err()
+			case <-ses.ctx.Done():
+				return nil, ctx.Err()
 			}
-		} else {
-			out = append(out, id)
+		default:
+			return nil, err
 		}
 	}
 
-	return
+	return ids[:n], nil
 }
 
 func (ses *Session) addReceiver(prv *receiver) {
@@ -192,11 +199,4 @@ func (ses *Session) addReceiver(prv *receiver) {
 	defer ses.rcvrs.l.Unlock()
 
 	ses.rcvrs.s = append(ses.rcvrs.s, prv)
-}
-
-func (ses *Session) track(b blocks.Block) {
-	ses.blocks.l.Lock()
-	defer ses.blocks.l.Unlock()
-
-	ses.blocks.m[b.Cid()] = b
 }

@@ -184,6 +184,10 @@ func (l *cidList) Append(ids ...cid.Cid) error {
 	}
 
 	for _, id := range ids {
+		if !id.Defined() {
+			continue
+		}
+
 		l.front.next = &cidItem{cid: id}
 		l.front = l.front.next
 	}

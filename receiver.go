@@ -16,12 +16,6 @@ type putter interface {
 	PutMany([]blocks.Block) error
 }
 
-type nilPutter struct{}
-
-func (f *nilPutter) PutMany([]blocks.Block) error {
-	return nil
-}
-
 // receiver represents an entity responsible for retrieving blocks from remote peer.
 type receiver struct {
 	put putter
@@ -48,9 +42,6 @@ func newReceiver(
 		ctx:     ctx,
 		writeCh: make(chan *write, queueSize),
 		readCh:  make(chan *read, queueSize),
-	}
-	if rcv.put == nil {
-		rcv.put = &nilPutter{}
 	}
 
 	err := rcv.handleHandshake(t)
