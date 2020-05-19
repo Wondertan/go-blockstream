@@ -3,7 +3,6 @@ package blockstream
 import (
 	"context"
 	"io"
-	"sync"
 
 	"github.com/Wondertan/go-libp2p-access"
 	"github.com/ipfs/go-block-format"
@@ -24,12 +23,8 @@ type tracker interface {
 type Session struct {
 	ctx context.Context
 
-	rcvrs struct {
-		s []*receiver
-		l sync.RWMutex
-	}
-
-	trk tracker
+	rcvrs []*receiver
+	trk   tracker
 }
 
 func newSession(
@@ -39,18 +34,10 @@ func newSession(
 	t access.Token,
 	onErr func(func() error),
 ) (ses *Session, err error) {
-	ses = &Session{
-		ctx: ctx,
-		rcvrs: struct {
-			s []*receiver
-			l sync.RWMutex
-		}{},
-		trk: pg,
-	}
-
-	ses.rcvrs.s = make([]*receiver, len(rws))
+	ses = &Session{ctx: ctx, trk: pg}
+	ses.rcvrs = make([]*receiver, len(rws))
 	for i, s := range rws {
-		ses.rcvrs.s[i], err = newReceiver(ctx, pg, s, t, onErr)
+		ses.rcvrs[i], err = newReceiver(ctx, pg, s, t, onErr)
 		if err != nil {
 			return
 		}
@@ -142,13 +129,10 @@ func (ses *Session) receive(ctx context.Context, in []cid.Cid, out chan<- blocks
 
 // distribute splits ids between providers to download from multiple sources.
 func (ses *Session) distribute(ids []cid.Cid) map[*receiver][]cid.Cid {
-	ses.rcvrs.l.RLock()
-	defer ses.rcvrs.l.RUnlock()
-
-	l := len(ses.rcvrs.s)
+	l := len(ses.rcvrs)
 	distrib := make(map[*receiver][]cid.Cid, l)
 	for i, k := range ids {
-		p := ses.rcvrs.s[i%l]
+		p := ses.rcvrs[i%l]
 		distrib[p] = append(distrib[p], k)
 	}
 
