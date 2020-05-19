@@ -55,10 +55,6 @@ func (e *exchange) NewSession(ctx context.Context) iexchange.Fetcher {
 	}
 
 	ses, err := (*blockstream.BlockStream)(e).Session(ctx, tkn, true, prvs...)
-	go func() {
-		<-ctx.Done()
-		ses.Close()
-	}()
 	return &fetcher{ses: ses, err: err}
 }
 

@@ -23,8 +23,7 @@ type tracker interface {
 }
 
 type Session struct {
-	ctx    context.Context
-	cancel context.CancelFunc
+	ctx context.Context
 
 	rcvrs struct {
 		s []*receiver
@@ -41,10 +40,8 @@ func newSession(
 	t access.Token,
 	onErr func(func() error),
 ) (ses *Session, err error) {
-	ctx, cancel := context.WithCancel(ctx)
 	ses = &Session{
-		ctx:    ctx,
-		cancel: cancel,
+		ctx: ctx,
 		rcvrs: struct {
 			s []*receiver
 			l sync.RWMutex
@@ -125,12 +122,6 @@ func (ses *Session) Blocks(ctx context.Context, ids []cid.Cid) (<-chan blocks.Bl
 	}
 
 	return buf.Output(), buf.Close()
-}
-
-// Close ends session.
-func (ses *Session) Close() error {
-	ses.cancel()
-	return nil
 }
 
 // receive requests providers in the session for ids and writes them to the chan.
