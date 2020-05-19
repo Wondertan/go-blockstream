@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ipfs/go-cid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -38,26 +39,37 @@ func TestBufferDynamic(t *testing.T) {
 }
 
 func TestBufferOrder(t *testing.T) {
+	const (
+		count    = 64
+		orders   = 8
+		perOrder = count / orders
+	)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	buf := NewBuffer(ctx, 32, 32)
+	bs, ids := randBlockstore(t, rand.Reader, count, 256)
+	buf := NewBuffer(ctx, count, count)
 	defer buf.Close()
-	bs, ids := randBlocks(t, rand.Reader, 32, 256)
 
 	go func() {
-		// define order in new routine
-		err := buf.Order(ids...)
-		require.Nil(t, err, err)
+		for i := 0; i < orders; i++ {
+			ids := ids[i*perOrder : (i+1)*perOrder]
 
-		// send blocks in reverse
-		for i := len(bs) - 1; i >= 0; i-- {
-			buf.Input() <- bs[i]
+			err := buf.Order(ids...) // define order in new routine
+			require.Nil(t, err, err)
+
+			go func(ids []cid.Cid) {
+				for i := len(ids) - 1; i >= 0; i-- {
+					b, _ := bs.Get(ids[i])
+					buf.Input() <- b // send blocks in reverse
+				}
+			}(ids)
 		}
 	}()
 
 	// check requested order
-	for i := 0; i < len(bs)-1; i++ {
+	for i := 0; i < len(ids)-1; i++ {
 		select {
 		case b := <-buf.Output():
 			assert.Equal(t, ids[i], b.Cid())
@@ -108,4 +120,28 @@ func TestBufferClosing(t *testing.T) {
 		_, ok := <-buf.Output()
 		assert.False(t, ok)
 	})
+}
+
+func TestBufferCidList(t *testing.T) {
+	buf := newList(256)
+	_, ids := randBlocks(t, rand.Reader, 10, 256)
+
+	in := ids[0]
+	buf.Append(in)
+	out := buf.Pop()
+	assert.Equal(t, in, out)
+
+	out = buf.Pop()
+	assert.Equal(t, out, cid.Undef)
+
+	// Check that link between items is not lost after popping.
+	buf.Append(ids...)
+	for _, id := range ids {
+		out := buf.Pop()
+		assert.Equal(t, id, out)
+	}
+
+	out = buf.Pop()
+	assert.Equal(t, out, cid.Undef)
+	assert.True(t, buf.Len() == 0)
 }

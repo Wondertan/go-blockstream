@@ -15,6 +15,8 @@ import (
 	"github.com/ipfs/go-merkledag"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/Wondertan/go-blockstream"
 )
 
 func TestFetchDAG(t *testing.T) {
@@ -49,6 +51,10 @@ func TestFetchAbsent(t *testing.T) {
 	fillstore := blockstore.NewBlockstore(sync.MutexWrap(datastore.NewMapDatastore()))
 	halfstore := blockstore.NewBlockstore(sync.MutexWrap(datastore.NewMapDatastore()))
 
+	bss := blockstream.MockNet(t, ctx, 2)
+	bss[0].Blocks = fillstore
+	bss[1].Blocks = halfstore
+
 	lv1 := dagFromReader(t, io.LimitReader(rand.Reader, rsize), &fakeAdder{fillstore}, nsize)
 	copyBlockstore(t, ctx, fillstore, halfstore)
 	lv2 := dagFromReader(t, io.LimitReader(rand.Reader, rsize), &fakeAdder{fillstore}, nsize)
@@ -78,18 +84,14 @@ func TestFetchAbsent(t *testing.T) {
 	root.AddNodeLink("3", n3)
 	fillstore.Put(root)
 
-	s := &offlineStreamer{getter: fillstore.Get}
-	err := FetchAbsent(ctx, root.Cid(), s, halfstore)
+	ses, err := bss[1].Session(ctx, "", false, bss[0].Host.ID())
+	require.Nil(t, err, err)
+
+	err = FetchAbsent(ctx, root.Cid(), ses, halfstore)
 	require.Nil(t, err, err)
 
 	assertEqualBlockstore(t, ctx, fillstore, halfstore)
 	assertEqualBlockstore(t, ctx, halfstore, fillstore)
-
-	for _, id := range s.streamed {
-		if id.Equals(lv1.Cid()) {
-			t.Fatal("streamed existed blocks")
-		}
-	}
 }
 
 func assertEqualBlockstore(t *testing.T, ctx context.Context, exp, given blockstore.Blockstore) {

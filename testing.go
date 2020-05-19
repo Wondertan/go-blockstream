@@ -1,14 +1,31 @@
 package blockstream
 
 import (
+	"context"
 	"io"
 	"testing"
 
+	access "github.com/Wondertan/go-libp2p-access"
 	"github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
 	"github.com/ipfs/go-ipfs-blockstore"
+	mocknet "github.com/libp2p/go-libp2p/p2p/net/mock"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+func MockNet(t *testing.T, ctx context.Context, count int) []*BlockStream {
+	net, err := mocknet.FullMeshConnected(ctx, count)
+	require.Nil(t, err, err)
+	hs := net.Hosts()
+
+	nodes := make([]*BlockStream, count)
+	for i, h := range hs {
+		nodes[i] = NewBlockStream(h, nil, access.NewPassingGranter())
+	}
+
+	return nodes
+}
 
 func randBlockstore(t *testing.T, rand io.Reader, count, size int) (blockstore.Blockstore, []cid.Cid) {
 	bstore := newBlockstore()

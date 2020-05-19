@@ -114,7 +114,7 @@ func (buf *buffer) fill(ctx context.Context) {
 
 			buf.blocks[bl.Cid()] = bl // store received block in the map.
 		case output <- toWrite: // if send succeed:
-			delete(buf.blocks, buf.order.PopBack())     // 1. remove the cid from order list; 2. remove block from map.
+			delete(buf.blocks, buf.order.Pop())         // 1. remove the cid from order list; 2. remove block from map.
 			if buf.order.Len() == 0 && buf.isClosed() { // 3. check maybe it is time to close the buf.
 				return
 			}
@@ -197,11 +197,19 @@ func (l *cidList) Append(ids ...cid.Cid) error {
 	return nil
 }
 
-// PopBack removes and returns first cid from the list.
+// Pop removes and returns first cid from the list.
 // Must be called only from one goroutine.
-func (l *cidList) PopBack() cid.Cid {
+func (l *cidList) Pop() cid.Cid {
 	id := l.back.cid
-	l.back = l.back.next
-	atomic.AddUint32(&l.len, ^uint32(0))
+	if id.Defined() {
+		if l.back.next != nil {
+			l.back = l.back.next
+		} else {
+			l.back.cid = cid.Undef
+		}
+
+		atomic.AddUint32(&l.len, ^uint32(0))
+	}
+
 	return id
 }
