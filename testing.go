@@ -76,6 +76,8 @@ func (s *fakeStream) Close() error {
 
 type fakeTracker struct{}
 
+func (t fakeTracker) Has(cid.Cid) (bool, error) { return false, nil }
+
 func (fakeTracker) PutMany([]blocks.Block) error { return nil }
 
 func (fakeTracker) GetSize(cid.Cid) (int, error) { return 0, nil }

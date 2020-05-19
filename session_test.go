@@ -27,9 +27,9 @@ func TestSessionStream(t *testing.T) {
 	ses, err := newSession(ctx, trk, nil, tkn, nil)
 	require.Nil(t, err, err)
 
-	ses.addReceiver(rcv(t, ctx, tkn, get, trk, msgSize))
-	ses.addReceiver(rcv(t, ctx, tkn, get, trk, msgSize))
-	ses.addReceiver(rcv(t, ctx, tkn, get, trk, msgSize))
+	ses.rcvrs.s = append(ses.rcvrs.s, rcv(t, ctx, tkn, get, trk, msgSize))
+	ses.rcvrs.s = append(ses.rcvrs.s, rcv(t, ctx, tkn, get, trk, msgSize))
+	ses.rcvrs.s = append(ses.rcvrs.s, rcv(t, ctx, tkn, get, trk, msgSize))
 
 	in := make(chan []cid.Cid, 2)
 	in <- append(remote, cid.Undef, cid.Undef)
@@ -57,9 +57,9 @@ func TestSessionBlocks(t *testing.T) {
 	ses, err := newSession(ctx, trk, nil, tkn, nil)
 	require.Nil(t, err, err)
 
-	ses.addReceiver(rcv(t, ctx, tkn, get, trk, msgSize))
-	ses.addReceiver(rcv(t, ctx, tkn, get, trk, msgSize))
-	ses.addReceiver(rcv(t, ctx, tkn, get, trk, msgSize))
+	ses.rcvrs.s = append(ses.rcvrs.s, rcv(t, ctx, tkn, get, trk, msgSize))
+	ses.rcvrs.s = append(ses.rcvrs.s, rcv(t, ctx, tkn, get, trk, msgSize))
+	ses.rcvrs.s = append(ses.rcvrs.s, rcv(t, ctx, tkn, get, trk, msgSize))
 
 	ch1, err := ses.Blocks(ctx, remote[:count/2])
 	require.Nil(t, err, err)

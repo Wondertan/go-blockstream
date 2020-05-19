@@ -14,6 +14,7 @@ import (
 type getter interface {
 	GetSize(cid.Cid) (int, error)
 	Get(cid.Cid) (blocks.Block, error)
+	Has(cid.Cid) (bool, error)
 }
 
 // sender represents an entity responsible for sending blocks to remote peer which asked for them.

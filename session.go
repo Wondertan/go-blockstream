@@ -8,7 +8,6 @@ import (
 	"github.com/Wondertan/go-libp2p-access"
 	"github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
-	blockstore "github.com/ipfs/go-ipfs-blockstore"
 )
 
 const (
@@ -156,38 +155,47 @@ func (ses *Session) distribute(ids []cid.Cid) map[*receiver][]cid.Cid {
 	return distrib
 }
 
-// tracked fills buffer with tracked blocks and returns ids remained to be fetched.
+// tracked sends known Blocks to the chan and returns ids remained to be fetched.
 func (ses *Session) tracked(ctx context.Context, ids []cid.Cid, bs chan<- blocks.Block) ([]cid.Cid, error) {
-	n := 0
+	var (
+		n    int
+		have []cid.Cid
+	)
 	for _, id := range ids {
 		if !id.Defined() {
 			continue
 		}
 
-		b, err := ses.trk.Get(id)
-		switch err {
-		case blockstore.ErrNotFound:
+		ok, err := ses.trk.Has(id)
+		if err != nil {
+			return nil, err
+		}
+
+		if ok {
+			have = append(have, id) // TODO Reduce allocs
+		} else {
 			ids[n] = id
 			n++
-		case nil:
-			select {
-			case bs <- b:
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-ses.ctx.Done():
-				return nil, ctx.Err()
-			}
-		default:
-			return nil, err
 		}
 	}
 
+	go func() {
+		for _, id := range have {
+			b, err := ses.trk.Get(id)
+			if err != nil {
+				log.Errorf("Can't get tracked block: %s", err)
+				continue
+			}
+
+			select {
+			case bs <- b:
+			case <-ctx.Done():
+				return
+			case <-ses.ctx.Done():
+				return
+			}
+		}
+	}()
+
 	return ids[:n], nil
-}
-
-func (ses *Session) addReceiver(prv *receiver) {
-	ses.rcvrs.l.Lock()
-	defer ses.rcvrs.l.Unlock()
-
-	ses.rcvrs.s = append(ses.rcvrs.s, prv)
 }
