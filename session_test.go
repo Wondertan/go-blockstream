@@ -21,21 +21,23 @@ func TestSessionStream(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	bs, ids := randBlockstore(t, rand.Reader, count, size)
+	get, remote := randBlockstore(t, rand.Reader, count/2, size)
+	trk, local := randBlockstore(t, rand.Reader, count/2, size)
 
-	ses, err := newSession(ctx, &fakeTracker{}, nil, tkn, nil)
+	ses, err := newSession(ctx, trk, nil, tkn, nil)
 	require.Nil(t, err, err)
 
-	ses.addReceiver(rcv(t, ctx, tkn, bs, msgSize))
-	ses.addReceiver(rcv(t, ctx, tkn, bs, msgSize))
-	ses.addReceiver(rcv(t, ctx, tkn, bs, msgSize))
+	ses.addReceiver(rcv(t, ctx, tkn, get, trk, msgSize))
+	ses.addReceiver(rcv(t, ctx, tkn, get, trk, msgSize))
+	ses.addReceiver(rcv(t, ctx, tkn, get, trk, msgSize))
 
-	in := make(chan []cid.Cid, 1)
-	in <- ids
+	in := make(chan []cid.Cid, 2)
+	in <- append(remote, cid.Undef, cid.Undef)
+	in <- local
 	close(in)
 
 	out := ses.Stream(ctx, in)
-	assertChan(t, out, bs, count)
+	assertChan(t, out, trk, count)
 }
 
 func TestSessionBlocks(t *testing.T) {
@@ -49,26 +51,31 @@ func TestSessionBlocks(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	bs, ids := randBlockstore(t, rand.Reader, count, size)
+	get, remote := randBlockstore(t, rand.Reader, count, size)
+	trk, local := randBlockstore(t, rand.Reader, count, size)
 
-	ses, err := newSession(ctx, &fakeTracker{}, nil, tkn, nil)
+	ses, err := newSession(ctx, trk, nil, tkn, nil)
 	require.Nil(t, err, err)
 
-	ses.addReceiver(rcv(t, ctx, tkn, bs, msgSize))
-	ses.addReceiver(rcv(t, ctx, tkn, bs, msgSize))
-	ses.addReceiver(rcv(t, ctx, tkn, bs, msgSize))
+	ses.addReceiver(rcv(t, ctx, tkn, get, trk, msgSize))
+	ses.addReceiver(rcv(t, ctx, tkn, get, trk, msgSize))
+	ses.addReceiver(rcv(t, ctx, tkn, get, trk, msgSize))
 
-	ch1, err := ses.Blocks(ctx, ids[:count/2])
+	ch1, err := ses.Blocks(ctx, remote[:count/2])
 	require.Nil(t, err, err)
 
-	ch2, err := ses.Blocks(ctx, ids[count/2:])
+	ch2, err := ses.Blocks(ctx, remote[count/2:])
 	require.Nil(t, err, err)
 
-	assertChan(t, ch1, bs, count/2)
-	assertChan(t, ch2, bs, count/2)
+	ch3, err := ses.Blocks(ctx, local)
+	require.Nil(t, err, err)
+
+	assertChan(t, ch1, trk, count/2)
+	assertChan(t, ch2, trk, count/2)
+	assertChan(t, ch3, trk, count)
 }
 
-func rcv(t *testing.T, ctx context.Context, tkn access.Token, blocks getter, max int) *receiver {
+func rcv(t *testing.T, ctx context.Context, tkn access.Token, get getter, put putter, max int) *receiver {
 	eh := func(f func() error) {
 		if err := f(); err != nil {
 			t.Error(err)
@@ -77,13 +84,13 @@ func rcv(t *testing.T, ctx context.Context, tkn access.Token, blocks getter, max
 
 	p, s := pair()
 	go func() {
-		_, err := newSender(s, blocks, max, func(token access.Token) error {
+		_, err := newSender(s, get, max, func(token access.Token) error {
 			return nil
 		}, eh)
 		require.Nil(t, err, err)
 	}()
 
-	r, err := newReceiver(ctx, &fakeTracker{}, p, tkn, eh)
+	r, err := newReceiver(ctx, put, p, tkn, eh)
 	require.Nil(t, err, err)
 	return r
 }

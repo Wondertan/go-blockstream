@@ -185,6 +185,7 @@ func (l *cidList) Append(ids ...cid.Cid) error {
 
 	for _, id := range ids {
 		if !id.Defined() {
+			ln--
 			continue
 		}
 
