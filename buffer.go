@@ -112,6 +112,12 @@ func (buf *buffer) fill(ctx context.Context) {
 				return
 			}
 
+			if toWrite == nil && buf.order.Len() > 0 && bl.Cid().Equals(buf.order.Back()) {
+				toWrite = bl
+				output = buf.output
+				continue // no need to store in the map if it is a mach
+			}
+
 			buf.blocks[bl.Cid()] = bl // store received block in the map.
 		case output <- toWrite: // if send succeed:
 			delete(buf.blocks, buf.order.Pop())         // 1. remove the cid from order list; 2. remove block from map.
