@@ -20,7 +20,7 @@ func TestBufferDynamic(t *testing.T) {
 
 	bs, ids := randBlocks(t, rand.Reader, 256, 256)
 	go func() {
-		err := buf.Order(ids...)
+		err := buf.Enqueue(ids...)
 		require.Nil(t, err, err)
 	}()
 
@@ -56,7 +56,7 @@ func TestBufferOrder(t *testing.T) {
 		for i := 0; i < orders; i++ {
 			ids := ids[i*perOrder : (i+1)*perOrder]
 
-			err := buf.Order(ids...) // define order in new routine
+			err := buf.Enqueue(ids...) // define queue in new routine
 			require.Nil(t, err, err)
 
 			go func(ids []cid.Cid) {
@@ -68,14 +68,32 @@ func TestBufferOrder(t *testing.T) {
 		}
 	}()
 
-	// check requested order
+	// check requested queue
 	for i := 0; i < len(ids)-1; i++ {
 		select {
 		case b := <-buf.Output():
 			assert.Equal(t, ids[i], b.Cid())
 		}
 	}
-	assert.Equal(t, buf.order.Len(), uint32(0))
+	assert.Equal(t, buf.queue.Len(), uint32(0))
+}
+
+func TestBufferLength(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	bs, ids := randBlocks(t, rand.Reader, 129, 256)
+	buf := NewBuffer(ctx, 128, 128)
+
+	err := buf.Enqueue(ids...)
+	assert.Equal(t, errBufferOverflow, err)
+
+	bs, ids = bs[:len(bs)-1], ids[:len(bs)-1]
+	for _, b := range bs {
+		buf.Input() <- b
+	}
+
+	assert.Equal(t, len(bs), buf.Len())
 }
 
 func TestBufferClosing(t *testing.T) {
@@ -84,7 +102,7 @@ func TestBufferClosing(t *testing.T) {
 
 	t.Run("WithClose", func(t *testing.T) {
 		buf := NewBuffer(ctx, 32, 32)
-		err := buf.Order(ids...)
+		err := buf.Enqueue(ids...)
 		require.Nil(t, err, err)
 
 		err = buf.Close()
@@ -99,7 +117,7 @@ func TestBufferClosing(t *testing.T) {
 	t.Run("WithInput", func(t *testing.T) {
 		buf := NewBuffer(ctx, 32, 32)
 
-		err := buf.Order(ids...)
+		err := buf.Enqueue(ids...)
 		require.Nil(t, err, err)
 
 		buf.Input() <- bs[0]
@@ -112,7 +130,7 @@ func TestBufferClosing(t *testing.T) {
 
 	t.Run("WithContext", func(t *testing.T) {
 		buf := NewBuffer(ctx, 32, 32)
-		err := buf.Order(ids...)
+		err := buf.Enqueue(ids...)
 		require.Nil(t, err, err)
 
 		// check that closing context terminates Buffer

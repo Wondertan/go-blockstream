@@ -62,7 +62,7 @@ func (ses *Session) Stream(ctx context.Context, in <-chan []cid.Cid) <-chan bloc
 					return
 				}
 
-				err := buf.Order(ids...)
+				err := buf.Enqueue(ids...)
 				if err != nil {
 					log.Error(err)
 					return
@@ -97,7 +97,7 @@ func (ses *Session) Blocks(ctx context.Context, ids []cid.Cid) (<-chan blocks.Bl
 	}()
 
 	buf := NewBuffer(ctx, len(ids), len(ids))
-	err := buf.Order(ids...)
+	err := buf.Enqueue(ids...)
 	if err != nil {
 		return nil, err
 	}
