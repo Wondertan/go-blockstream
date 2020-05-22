@@ -70,10 +70,8 @@ func TestBufferOrder(t *testing.T) {
 
 	// check requested queue
 	for i := 0; i < len(ids)-1; i++ {
-		select {
-		case b := <-buf.Output():
-			assert.Equal(t, ids[i], b.Cid())
-		}
+		b := <-buf.Output()
+		assert.Equal(t, ids[i], b.Cid())
 	}
 	assert.Equal(t, buf.queue.Len(), uint32(0))
 }
@@ -82,18 +80,51 @@ func TestBufferLength(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	bs, ids := randBlocks(t, rand.Reader, 129, 256)
+	bs, _ := randBlocks(t, rand.Reader, 128, 256)
 	buf := NewBuffer(ctx, 128, 128)
+
+	for _, b := range bs {
+		buf.Input() <- b
+	}
+	assert.Equal(t, len(bs), buf.Len())
+}
+
+func TestBufferLimit(t *testing.T) {
+	const limit = 128
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	bs, ids := randBlocks(t, rand.Reader, 256, 256)
+	buf := NewBuffer(ctx, 64, limit)
 
 	err := buf.Enqueue(ids...)
 	assert.Equal(t, errBufferOverflow, err)
 
-	bs, ids = bs[:len(bs)-1], ids[:len(bs)-1]
-	for _, b := range bs {
-		buf.Input() <- b
+	err = buf.Enqueue(ids[:len(ids)/2]...)
+	require.Nil(t, err, err)
+
+	tmr := time.NewTimer(10 * time.Millisecond)
+	defer tmr.Stop()
+
+	for i, b := range bs { // check that buffer will not grow more than a limit
+		select {
+		case buf.Input() <- b:
+			tmr.Reset(10 * time.Millisecond)
+			if i != len(bs)-1 {
+				continue
+			}
+		case <-tmr.C:
+		}
+
+		assert.Equal(t, limit, i)
+		break
 	}
 
-	assert.Equal(t, len(bs), buf.Len())
+	for i := 0; i < limit; i++ { // check that after blocking it is possible to read the Blocks
+		b := <-buf.Output()
+		assert.Equal(t, ids[i], b.Cid())
+	}
 }
 
 func TestBufferClosing(t *testing.T) {
@@ -137,6 +168,18 @@ func TestBufferClosing(t *testing.T) {
 		cancel()
 		_, ok := <-buf.Output()
 		assert.False(t, ok)
+	})
+
+	t.Run("Closed", func(t *testing.T) {
+		buf := NewBuffer(ctx, 32, 32)
+		err := buf.Close()
+		require.Nil(t, err, err)
+
+		err = buf.Close()
+		assert.Equal(t, errBufferClosed, err)
+
+		err = buf.Enqueue(ids...)
+		assert.Equal(t, errBufferClosed, err)
 	})
 }
 

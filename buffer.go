@@ -16,12 +16,10 @@ var (
 
 // buffer is a dynamically sized Block buffer with a strict CID ordering done with linked list.
 type buffer struct {
-	len, closed uint32 // atomic states of length and closage.
-
+	len, closed   uint32                   // atomic states of length and closage.
 	input, output chan blocks.Block        // read, write channels for in/outcoming Blocks.
 	blocks        map[cid.Cid]blocks.Block // only accessed inside `buffer()` routine, except for `Len()` method.
-
-	queue *cidList
+	queue         *cidList                 // ordered list of CIDs
 }
 
 // NewBuffer creates new ordered Block buffer given size and limit.
@@ -32,7 +30,7 @@ func NewBuffer(ctx context.Context, size, limit int) *buffer {
 		blocks: make(map[cid.Cid]blocks.Block, (size/4)-1), // decremented because of the `toWrite` slot in the `buffer()`
 		queue:  newList(limit),
 	}
-	go buf.buffer(ctx)
+	go buf.buffer(ctx, uint32(limit-(size/2+size/4)))
 	return buf
 }
 
@@ -77,11 +75,12 @@ func (buf *buffer) Close() error {
 }
 
 // buffer does actual buffering magic.
-func (buf *buffer) buffer(ctx context.Context) {
+func (buf *buffer) buffer(ctx context.Context, limit uint32) {
 	var (
-		pending cid.Cid             // first CID in a queue to be sent.
-		toWrite blocks.Block        // Block to be written.
-		output  chan<- blocks.Block // switching output channel to control select blocking.
+		pending cid.Cid           // first CID in a queue to be sent.
+		toWrite blocks.Block      // Block to be written.
+		output  chan blocks.Block // switching input and output channel to control select blocking.
+		input   = buf.input
 	)
 
 	defer func() {
@@ -104,7 +103,7 @@ func (buf *buffer) buffer(ctx context.Context) {
 
 	for {
 		select {
-		case b, ok := <-buf.input: // on received Block:
+		case b, ok := <-input: // on received Block:
 			if !ok { // if closed
 				buf.close()                          // signal closing,
 				if atomic.LoadUint32(&buf.len) > 0 { // if there is something to write,
@@ -115,8 +114,12 @@ func (buf *buffer) buffer(ctx context.Context) {
 				return // or stop.
 			}
 
-			atomic.AddUint32(&buf.len, 1) // increment internal buffer length.
-			if b.Cid().Equals(pending) {  // if it is a match,
+			if atomic.AddUint32(&buf.len, 1) == limit && // increment internal buffer length and if
+				toWrite != nil { // the limit is reached and there is something to output
+				input = nil // block the input.
+			}
+
+			if b.Cid().Equals(pending) { // if it is a match,
 				toWrite, output = b, buf.output // write the Block,
 				continue
 			}
@@ -129,6 +132,9 @@ func (buf *buffer) buffer(ctx context.Context) {
 			}
 
 			output, toWrite, pending = nil, nil, cid.Undef // or block current select case and clean sent data.
+			if input == nil {                              // if the input is blocked
+				input = buf.input // unblock
+			}
 		case <-ctx.Done():
 			buf.close()
 			return
