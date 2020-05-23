@@ -86,6 +86,8 @@ func TestBufferLength(t *testing.T) {
 	for _, b := range bs {
 		buf.Input() <- b
 	}
+
+	time.Sleep(10 * time.Millisecond) // fixes flakyness
 	assert.Equal(t, len(bs), buf.Len())
 }
 
