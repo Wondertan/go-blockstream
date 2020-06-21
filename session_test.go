@@ -5,39 +5,66 @@ import (
 	"crypto/rand"
 	"testing"
 
-	"github.com/Wondertan/go-libp2p-access"
+	blocks "github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
+	blockstore "github.com/ipfs/go-ipfs-blockstore"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
+func TestRequestResponder(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	bs, ids := randBlocks(t, rand.Reader, 8, 256)
+
+	in, out := make(chan *request, 4), make(chan *request, 4)
+	newRequestPair(ctx, in, out)
+
+	reqIn := newRequest(ctx, 0, ids)
+	in <- reqIn
+
+	reqOut := <-out
+	for _, b := range bs {
+		reqOut.Fill([]blocks.Block{b})
+	}
+
+	for _, b := range bs {
+		bs, _ := reqIn.Next()
+		assert.Equal(t, b, bs[0])
+	}
+}
+
 func TestSessionStream(t *testing.T) {
 	const (
-		count   = 130
+		count   = 512
+		times   = 8
 		size    = 64
 		msgSize = 256
-		tkn     = access.Token("test")
 	)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	get, remote := randBlockstore(t, rand.Reader, count/2, size)
-	trk, local := randBlockstore(t, rand.Reader, count/2, size)
+	bstore, ids := randBlockstore(t, rand.Reader, count, size)
 
-	ses, err := newSession(ctx, trk, nil, tkn, nil)
-	require.Nil(t, err, err)
-
-	ses.rcvrs = append(ses.rcvrs, rcv(t, ctx, tkn, get, trk, msgSize))
-	ses.rcvrs = append(ses.rcvrs, rcv(t, ctx, tkn, get, trk, msgSize))
-	ses.rcvrs = append(ses.rcvrs, rcv(t, ctx, tkn, get, trk, msgSize))
+	ses := newSession(ctx, &fakeTracker{})
+	addProvider(ctx, ses, bstore, msgSize)
+	addProvider(ctx, ses, bstore, msgSize)
+	addProvider(ctx, ses, bstore, msgSize)
 
 	in := make(chan []cid.Cid, 2)
-	in <- append(remote, cid.Undef, cid.Undef)
-	in <- local
-	close(in)
+	go func() {
+		for i := 0; i < times; i++ {
+			in <- ids[i*count/times : (i+1)*count/times]
+		}
+		close(in)
+	}()
 
 	out := ses.Stream(ctx, in)
-	assertChan(t, out, trk, count)
+	for i := 0; i < times; i++ {
+		assertChan(t, out, ids[i*count/times:(i+1)*count/times], count/times)
+	}
 }
 
 func TestSessionBlocks(t *testing.T) {
@@ -45,52 +72,32 @@ func TestSessionBlocks(t *testing.T) {
 		count   = 130
 		size    = 64
 		msgSize = 256
-		tkn     = access.Token("test")
 	)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	get, remote := randBlockstore(t, rand.Reader, count, size)
-	trk, local := randBlockstore(t, rand.Reader, count, size)
+	bstore, ids := randBlockstore(t, rand.Reader, count, size)
 
-	ses, err := newSession(ctx, trk, nil, tkn, nil)
+	ses := newSession(ctx, &fakeTracker{})
+	addProvider(ctx, ses, bstore, msgSize)
+	addProvider(ctx, ses, bstore, msgSize)
+	addProvider(ctx, ses, bstore, msgSize)
+
+	ch1, err := ses.Blocks(ctx, ids[:count/2])
 	require.Nil(t, err, err)
 
-	ses.rcvrs = append(ses.rcvrs, rcv(t, ctx, tkn, get, trk, msgSize))
-	ses.rcvrs = append(ses.rcvrs, rcv(t, ctx, tkn, get, trk, msgSize))
-	ses.rcvrs = append(ses.rcvrs, rcv(t, ctx, tkn, get, trk, msgSize))
-
-	ch1, err := ses.Blocks(ctx, remote[:count/2])
+	ch2, err := ses.Blocks(ctx, ids[count/2:])
 	require.Nil(t, err, err)
 
-	ch2, err := ses.Blocks(ctx, remote[count/2:])
-	require.Nil(t, err, err)
-
-	ch3, err := ses.Blocks(ctx, local)
-	require.Nil(t, err, err)
-
-	assertChan(t, ch1, trk, count/2)
-	assertChan(t, ch2, trk, count/2)
-	assertChan(t, ch3, trk, count)
+	assertChan(t, ch1, ids[:count/2], count/2)
+	assertChan(t, ch2, ids[count/2:], count/2)
 }
 
-func rcv(t *testing.T, ctx context.Context, tkn access.Token, get getter, put putter, max int) *receiver {
-	eh := func(f func() error) {
-		if err := f(); err != nil {
-			t.Error(err)
-		}
-	}
-
-	p, s := pair()
-	go func() {
-		_, err := newSender(s, get, max, func(token access.Token) error {
-			return nil
-		}, eh)
-		require.Nil(t, err, err)
-	}()
-
-	r, err := newReceiver(ctx, put, p, tkn, eh)
-	require.Nil(t, err, err)
-	return r
+func addProvider(ctx context.Context, ses *Session, bstore blockstore.Blockstore, msgSize int) {
+	reqs := make(chan *request, 8)
+	s1, s2 := streamPair()
+	newResponder(ctx, s2, reqs, closeLog)
+	newCollector(ctx, reqs, bstore, msgSize, closeLog)
+	ses.addProvider(s1, closeLog)
 }

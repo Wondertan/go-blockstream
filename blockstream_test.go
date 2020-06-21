@@ -33,7 +33,7 @@ func TestBlockStream(t *testing.T) {
 
 	nodes := make([]*BlockStream, nodesCount)
 	for i, h := range hs {
-		nodes[i] = NewBlockStream(h, bs, access.NewPassingGranter())
+		nodes[i] = NewBlockStream(ctx, h, bs, access.NewPassingGranter())
 	}
 
 	wg := new(sync.WaitGroup)
@@ -74,7 +74,7 @@ func TestBlockStream(t *testing.T) {
 	}
 
 	for _, ch := range chans {
-		assertChan(t, ch, bs, blocksCount)
+		assertChan(t, ch, cids, blocksCount)
 	}
 
 	cancel()

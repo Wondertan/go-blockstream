@@ -16,33 +16,34 @@ var (
 
 // buffer is a dynamically sized Block buffer with a strict CID ordering done with linked list.
 type buffer struct {
-	len, closed   uint32                   // atomic states of length and closage.
-	input, output chan blocks.Block        // read, write channels for in/outcoming Blocks.
-	blocks        map[cid.Cid]blocks.Block // only accessed inside `buffer()` routine, except for `Len()` method.
-	queue         *cidList                 // ordered list of CIDs
+	len, closed uint32 // atomic states of length and closage.
+	input       chan []blocks.Block
+	output      chan blocks.Block        // read, writeLoop channels for in/outcoming Blocks.
+	blocks      map[cid.Cid]blocks.Block // only accessed inside `buffer()` routine, except for `Len()` method.
+	queue       *cidQueue                // ordered list of CIDs
 }
 
 // NewBuffer creates new ordered Block buffer given size and limit.
 func NewBuffer(ctx context.Context, size, limit int) *buffer {
 	buf := &buffer{
-		input:  make(chan blocks.Block, size/2),
-		output: make(chan blocks.Block, size/4),
-		blocks: make(map[cid.Cid]blocks.Block, (size/4)-1), // decremented because of the `toWrite` slot in the `buffer()`
-		queue:  newList(limit),
+		input:  make(chan []blocks.Block, 8),
+		output: make(chan blocks.Block, size/2),
+		blocks: make(map[cid.Cid]blocks.Block, size/2), // decremented because of the `toWrite` slot in the `buffer()`
+		queue:  newCidQueue(limit),
 	}
-	go buf.buffer(ctx, uint32(limit-(size/2+size/4)))
+	go buf.buffer(ctx, uint32(limit-size/2))
 	return buf
 }
 
 // Len returns the amount of all Blocks stored in the buffer.
 func (buf *buffer) Len() int {
-	return int(atomic.LoadUint32(&buf.len)) + len(buf.input) + len(buf.output)
+	return int(atomic.LoadUint32(&buf.len)) + len(buf.output)
 }
 
-// Input returns channel to write Blocks into with unpredictable queue.
-// It is safe to write to the chan arbitrary amount of Blocks as the buffer is dynamic.
+// Input returns channel to writeLoop Blocks into with unpredictable queue.
+// It is safe to writeLoop to the chan arbitrary amount of Blocks as the buffer is dynamic.
 // Might be also used to close the buffer.
-func (buf *buffer) Input() chan<- blocks.Block {
+func (buf *buffer) Input() chan []blocks.Block { // TODO Change this to write only
 	return buf.input
 }
 
@@ -59,7 +60,7 @@ func (buf *buffer) Enqueue(ids ...cid.Cid) error {
 		return errBufferClosed
 	}
 
-	return buf.queue.Append(ids...)
+	return buf.queue.Enqueue(ids...)
 }
 
 // Close signals buffer to close.
@@ -103,10 +104,10 @@ func (buf *buffer) buffer(ctx context.Context, limit uint32) {
 
 	for {
 		select {
-		case b, ok := <-input: // on received Block:
+		case bs, ok := <-input: // on received Block:
 			if !ok { // if closed
 				buf.close()                          // signal closing,
-				if atomic.LoadUint32(&buf.len) > 0 { // if there is something to write,
+				if atomic.LoadUint32(&buf.len) > 0 { // if there is something to writeLoop,
 					buf.input = nil // block the current case,
 					continue        // and continue writing.
 				}
@@ -114,17 +115,19 @@ func (buf *buffer) buffer(ctx context.Context, limit uint32) {
 				return // or stop.
 			}
 
-			if atomic.AddUint32(&buf.len, 1) == limit && // increment internal buffer length and if
+			if atomic.AddUint32(&buf.len, uint32(len(bs))) >= limit && // increment internal buffer length and if
 				toWrite != nil { // the limit is reached and there is something to output
 				input = nil // block the input.
 			}
 
-			if b.Cid().Equals(pending) { // if it is a match,
-				toWrite, output = b, buf.output // write the Block,
-				continue
-			}
+			for _, b := range bs { // iterate over blocks
+				if b.Cid().Equals(pending) { // if it is a match,
+					toWrite, output = b, buf.output // writeLoop the Block,
+					continue
+				}
 
-			buf.blocks[b.Cid()] = b // or store received block in the map.
+				buf.blocks[b.Cid()] = b // or store the received block in the map.
+			}
 		case output <- toWrite: // on sent Block:
 			atomic.AddUint32(&buf.len, ^uint32(0))      // decrement internal buffer length,
 			if buf.queue.Len() == 0 && buf.isClosed() { // check maybe it is time to close the buf,
@@ -141,7 +144,7 @@ func (buf *buffer) buffer(ctx context.Context, limit uint32) {
 		}
 
 		if buf.queue.Len() > 0 && !pending.Defined() { // if there is something in a queue and no pending,
-			pending = buf.queue.Pop() // define newer pending,
+			pending = buf.queue.Dequeue() // define newer pending,
 		}
 
 		if toWrite == nil { // if we don't have the pending Block,
@@ -162,32 +165,32 @@ func (buf *buffer) close() {
 	atomic.CompareAndSwapUint32(&buf.closed, 0, 1)
 }
 
-// cidList is a lock-free linked list of cids.
-type cidList struct {
+// cidQueue is a lock-free linked list of CIDs that implements queue.
+type cidQueue struct {
 	len, limit  uint32
-	back, front *cidItem
+	back, front *cidQueueItem
 }
 
-// cidItem is an item of cidList that refs next item in a list.
-type cidItem struct {
+// cidQueueItem is an element of cidQueue.
+type cidQueueItem struct {
 	cid  cid.Cid
-	next *cidItem
+	next *cidQueueItem
 }
 
-// newList creates new limited cidList.
-func newList(limit int) *cidList {
-	itm := &cidItem{}
-	return &cidList{limit: uint32(limit), back: itm, front: itm}
+// newCidQueue creates new limited cidQueue.
+func newCidQueue(limit int) *cidQueue {
+	itm := &cidQueueItem{}
+	return &cidQueue{limit: uint32(limit), back: itm, front: itm}
 }
 
-// Len returns length of the list.
-func (l *cidList) Len() uint32 {
+// Len returns length of the queue.
+func (l *cidQueue) Len() uint32 {
 	return atomic.LoadUint32(&l.len)
 }
 
-// Append adds given CIDs to the front.
+// Enqueue adds given CIDs to the front of the queue.
 // Must be called only from one goroutine.
-func (l *cidList) Append(ids ...cid.Cid) error {
+func (l *cidQueue) Enqueue(ids ...cid.Cid) error {
 	ln := uint32(len(ids))
 	if l.Len()+ln > l.limit {
 		return errBufferOverflow
@@ -204,7 +207,7 @@ func (l *cidList) Append(ids ...cid.Cid) error {
 			continue
 		}
 
-		l.front.next = &cidItem{cid: id}
+		l.front.next = &cidQueueItem{cid: id}
 		l.front = l.front.next
 	}
 
@@ -212,9 +215,9 @@ func (l *cidList) Append(ids ...cid.Cid) error {
 	return nil
 }
 
-// Pop removes and returns first cid from the list.
+// Dequeue removes and returns last CID from the queue.
 // Must be called only from one goroutine.
-func (l *cidList) Pop() cid.Cid {
+func (l *cidQueue) Dequeue() cid.Cid {
 	id := l.back.cid
 	if id.Defined() {
 		if l.back.next != nil {

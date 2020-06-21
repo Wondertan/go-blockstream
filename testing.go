@@ -21,7 +21,7 @@ func MockNet(t *testing.T, ctx context.Context, count int) []*BlockStream {
 
 	nodes := make([]*BlockStream, count)
 	for i, h := range hs {
-		nodes[i] = NewBlockStream(h, nil, access.NewPassingGranter())
+		nodes[i] = NewBlockStream(ctx, h, nil, access.NewPassingGranter())
 	}
 
 	return nodes
@@ -57,15 +57,56 @@ func randBlocks(t *testing.T, rand io.Reader, count, size int) ([]blocks.Block, 
 	return bs, ids
 }
 
-func assertChan(t *testing.T, ch <-chan blocks.Block, bs blockstore.Blockstore, expected int) {
+func assertChan(t *testing.T, ch <-chan blocks.Block, ids []cid.Cid, expected int) {
 	var actual int
-	for b := range ch {
-		ok, err := bs.Has(b.Cid())
-		assert.Nil(t, err, err)
-		assert.True(t, ok)
+	for _, id := range ids {
+		b := <-ch
+		assert.Equal(t, id, b.Cid())
 		actual++
 	}
 	assert.Equal(t, expected, actual)
+}
+
+func assertBlockReq(t *testing.T, r io.Reader, in uint32, ids []cid.Cid) {
+	id, out, err := readBlocksReq(r)
+	require.Nil(t, err, err)
+	assert.Equal(t, ids, out)
+	assert.Equal(t, in, id)
+}
+
+func assertBlockReqCancel(t *testing.T, r io.Reader, in uint32) {
+	id, out, err := readBlocksReq(r)
+	require.Nil(t, err, err)
+	assert.Len(t, out, 0)
+	assert.Equal(t, in, id)
+}
+
+func assertBlockResp(t *testing.T, r io.Reader, in uint32, ids []cid.Cid) {
+	id, out, err := readBlocksResp(r)
+	require.Nil(t, err, err)
+	assert.Equal(t, in, id)
+	for i, b := range out {
+		_, err = newBlockCheckCid(b, ids[i])
+		require.Nil(t, err, err)
+	}
+}
+
+func newRequestPair(ctx context.Context, in, out chan *request) {
+	s1, s2 := streamPair()
+	newRequester(ctx, s1, in, &fakeTracker{}, closeLog)
+	newResponder(ctx, s2, out, closeLog)
+}
+
+func newTestResponder(t *testing.T, ctx context.Context, reqs chan *request) io.ReadWriter {
+	s1, s2 := streamPair()
+	newResponder(ctx, s2, reqs, closeLog)
+	return s1
+}
+
+func newTestRequester(t *testing.T, ctx context.Context, reqs chan *request, put blockPutter) io.ReadWriter {
+	s1, s2 := streamPair()
+	newRequester(ctx, s2, reqs, put, closeLog)
+	return s1
 }
 
 type fakeStream struct {
@@ -73,7 +114,7 @@ type fakeStream struct {
 	write *io.PipeWriter
 }
 
-func pair() (*fakeStream, *fakeStream) {
+func streamPair() (*fakeStream, *fakeStream) {
 	r1, w1 := io.Pipe()
 	r2, w2 := io.Pipe()
 	return &fakeStream{r1, w2}, &fakeStream{r2, w1}

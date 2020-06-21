@@ -6,6 +6,7 @@ import (
 	"io"
 	"testing"
 
+	access "github.com/Wondertan/go-libp2p-access"
 	"github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
 	"github.com/ipfs/go-datastore"
@@ -13,6 +14,7 @@ import (
 	"github.com/ipfs/go-ipfs-blockstore"
 	"github.com/ipfs/go-ipld-format"
 	"github.com/ipfs/go-merkledag"
+	mocknet "github.com/libp2p/go-libp2p/p2p/net/mock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -51,9 +53,12 @@ func TestFetchAbsent(t *testing.T) {
 	fillstore := blockstore.NewBlockstore(sync.MutexWrap(datastore.NewMapDatastore()))
 	halfstore := blockstore.NewBlockstore(sync.MutexWrap(datastore.NewMapDatastore()))
 
-	bss := blockstream.MockNet(t, ctx, 2)
-	bss[0].Blocks = fillstore
-	bss[1].Blocks = halfstore
+	net, err := mocknet.FullMeshConnected(ctx, 2)
+	require.Nil(t, err, err)
+	hs := net.Hosts()
+
+	r := blockstream.NewBlockStream(ctx, hs[0], fillstore, access.NewPassingGranter())
+	l := blockstream.NewBlockStream(ctx, hs[1], halfstore, access.NewPassingGranter())
 
 	lv1 := dagFromReader(t, io.LimitReader(rand.Reader, rsize), &fakeAdder{fillstore}, nsize)
 	copyBlockstore(t, ctx, fillstore, halfstore)
@@ -84,7 +89,7 @@ func TestFetchAbsent(t *testing.T) {
 	root.AddNodeLink("3", n3)
 	fillstore.Put(root)
 
-	ses, err := bss[1].Session(ctx, "", false, bss[0].Host.ID())
+	ses, err := l.Session(ctx, "", false, r.Host.ID())
 	require.Nil(t, err, err)
 
 	err = FetchAbsent(ctx, root.Cid(), ses, halfstore)

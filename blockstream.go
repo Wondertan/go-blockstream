@@ -3,7 +3,6 @@ package blockstream
 import (
 	"context"
 	"errors"
-	"io"
 	"sync"
 
 	"github.com/Wondertan/go-libp2p-access"
@@ -23,47 +22,45 @@ const Protocol protocol.ID = "/blockstream/1.0.0"
 
 var errClosed = errors.New("blockstream: closed")
 
+const collectorsDefault = 8
+
 type BlockStream struct {
+	ctx context.Context
+
 	Host    host.Host
 	Granter access.Granter
 	Blocks  blockstore.Blockstore
 
-	sessions struct {
-		m  map[access.Token]*Session
-		l  sync.Mutex
-		wg sync.WaitGroup
-	}
+	reqs chan *request
 
-	senders struct {
-		m  map[access.Token]*sender
-		l  sync.Mutex
-		wg sync.WaitGroup
-	}
+	collectors int
 
-	closed chan struct{}
+	wg sync.WaitGroup
 }
 
 type Option func(plain *BlockStream)
 
-func NewBlockStream(host host.Host, bstore blockstore.Blockstore, granter access.Granter, opts ...Option) *BlockStream {
+func Collectors(c int) Option {
+	return func(bs *BlockStream) {
+		bs.collectors = c
+	}
+}
+
+func NewBlockStream(ctx context.Context, host host.Host, bstore blockstore.Blockstore, granter access.Granter, opts ...Option) *BlockStream {
 	bs := &BlockStream{
-		Host:    host,
-		Granter: granter,
-		Blocks:  bstore,
-		sessions: struct {
-			m  map[access.Token]*Session
-			l  sync.Mutex
-			wg sync.WaitGroup
-		}{m: make(map[access.Token]*Session)},
-		senders: struct {
-			m  map[access.Token]*sender
-			l  sync.Mutex
-			wg sync.WaitGroup
-		}{m: make(map[access.Token]*sender)},
-		closed: make(chan struct{}),
+		ctx:        ctx,
+		Host:       host,
+		Granter:    granter,
+		Blocks:     bstore,
+		reqs:       make(chan *request, 16),
+		collectors: collectorsDefault,
 	}
 	for _, opt := range opts {
 		opt(bs)
+	}
+
+	for range make([]bool, collectorsDefault) {
+		newCollector(ctx, bs.reqs, bstore, maxMsgSize, closeLog)
 	}
 
 	host.SetStreamHandler(Protocol, func(stream network.Stream) {
@@ -76,32 +73,14 @@ func NewBlockStream(host host.Host, bstore blockstore.Blockstore, granter access
 }
 
 func (bs *BlockStream) Close() error {
-	if bs.isClosed() {
-		return errClosed
-	}
-
-	close(bs.closed)
-	bs.sessions.wg.Wait()
-	bs.senders.wg.Wait()
+	bs.wg.Wait()
 	return nil
 }
 
 // TODO Define opts.
 // Session starts new BlockStream session between current node and providing 'peers' within the `token` namespace.
 // Autosave defines if received Blocks should be automatically put into Blockstore.
-func (bs *BlockStream) Session(ctx context.Context, token access.Token, autosave bool, peers ...peer.ID) (ses *Session, err error) {
-	if bs.isClosed() {
-		return nil, errClosed
-	}
-
-	streams := make([]io.ReadWriteCloser, len(peers))
-	for i, p := range peers {
-		streams[i], err = bs.Host.NewStream(ctx, p, Protocol)
-		if err != nil {
-			return
-		}
-	}
-
+func (bs *BlockStream) Session(ctx context.Context, token access.Token, autosave bool, peers ...peer.ID) (*Session, error) {
 	var store blockstore.Blockstore
 	if autosave {
 		store = bs.Blocks
@@ -109,83 +88,62 @@ func (bs *BlockStream) Session(ctx context.Context, token access.Token, autosave
 		store = newBlockstore()
 	}
 
-	ses, err = newSession(
-		ctx,
-		store,
-		streams,
-		token,
-		func(f func() error) {
+	ses := newSession(ctx, store)
+	for _, p := range peers {
+		s, err := bs.Host.NewStream(ctx, p, Protocol)
+		if err != nil {
+			return nil, err
+		}
+
+		err = giveHand(s, token)
+		if err != nil {
+			return nil, err
+		}
+
+		ses.addProvider(s, func(f func() error) {
+			bs.wg.Add(1)
 			if err := f(); err != nil {
 				log.Error(err)
 			}
-		},
-	)
-	if err != nil {
-		return
+			bs.wg.Done()
+		})
 	}
 
-	bs.sessions.l.Lock()
-	bs.sessions.m[token] = ses
-	bs.sessions.wg.Add(1)
-	bs.sessions.l.Unlock()
-
-	go func() {
-		<-ctx.Done()
-		bs.sessions.l.Lock()
-		delete(bs.sessions.m, token)
-		bs.sessions.wg.Done()
-		bs.sessions.l.Unlock()
-	}()
-
-	return
+	return ses, nil
 }
 
-func (bs *BlockStream) handler(stream network.Stream) error {
-	var (
-		done chan<- error
-		tkn  access.Token
-	)
-	s, err := newSender(stream, bs.Blocks, maxMsgSize,
-		func(t access.Token) (err error) {
-			done, err = bs.Granter.Granted(tkn, stream.Conn().RemotePeer())
-			tkn = t
-			return
-		},
-		func(f func() error) {
-			if err := f(); err != nil {
-				log.Error(err)
-				done <- err
-			}
-
-			bs.senders.l.Lock()
-			delete(bs.senders.m, tkn)
-			bs.senders.wg.Done()
-			bs.senders.l.Unlock()
-		},
-	)
+func (bs *BlockStream) handler(s network.Stream) error {
+	var done chan<- error
+	_, err := takeHand(s, func(t access.Token) (err error) {
+		done, err = bs.Granter.Granted(t, s.Conn().RemotePeer())
+		return
+	})
 	if err != nil {
 		return err
 	}
 
-	bs.senders.l.Lock()
-	bs.senders.m[s.t] = s
-	bs.senders.wg.Add(1)
-	bs.senders.l.Unlock()
-
+	newResponder(bs.ctx, s, bs.reqs,
+		func(f func() error) {
+			bs.wg.Add(1)
+			if err := f(); err != nil {
+				log.Error(err)
+				done <- err
+			}
+			bs.wg.Done()
+		},
+	)
 	return nil
-}
-
-func (bs *BlockStream) isClosed() bool {
-	select {
-	case <-bs.closed:
-		return true
-	default:
-		return false
-	}
 }
 
 type onToken func(access.Token) error
 type onClose func(func() error)
+
+var closeLog = func(f func() error) {
+	err := f()
+	if err != nil {
+		log.Error(err)
+	}
+}
 
 func newBlockstore() blockstore.Blockstore {
 	return blockstore.NewBlockstore(dsync.MutexWrap(datastore.NewMapDatastore()))

@@ -11,7 +11,8 @@ message BlockStream {
     }
 
     Type type = 1; // Message type.
-    repeated bytes cids = 2; // REQ: Ids of the blocks.
-    repeated bytes blocks = 3; // RESP: The blocks themselves.
-    string token = 4; // HS: Session id/token to control access.
+    uint32 id = 2;
+    repeated bytes cids = 3; // REQ: Ids of the blocks.
+    repeated bytes blocks = 4; // RESP: The blocks themselves.
+    string token = 5; // HS: Session id/token to control access.
 }
