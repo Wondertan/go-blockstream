@@ -106,6 +106,7 @@ func (bs *BlockStream) Session(ctx context.Context, token access.Token, autosave
 			bs.wg.Add(1)
 			if err := f(); err != nil {
 				log.Error(err)
+				s.Reset()
 			}
 			bs.wg.Done()
 		})

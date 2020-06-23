@@ -37,12 +37,11 @@ func newResponder(ctx context.Context, rwc io.ReadWriteCloser, reqs chan *reques
 // for future write by writeLoop.
 func (r *responder) readLoop() error {
 	defer r.cancel()
-
 	for {
 		id, ids, err := readBlocksReq(r.rwc)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				return r.rwc.Close()
+				return nil
 			}
 
 			return err
@@ -69,7 +68,7 @@ func (r *responder) writeLoop() error {
 	for {
 		req := r.rq.Back()
 		if req == nil {
-			return nil
+			return r.rwc.Close()
 		}
 
 		for {

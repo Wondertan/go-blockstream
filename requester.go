@@ -47,11 +47,7 @@ func newRequester(ctx context.Context, rwc io.ReadWriteCloser, reqs chan *reques
 // writeLoop is a long running method which asynchronously handles requests, sends them to remote responder and queues up
 // for future read by readLoop. It also handles request canceling, as well as request recovering in case stream is dead.
 func (r *requester) writeLoop() error {
-	defer func() {
-		r.cancel()
-		r.rwc.Close()
-	}()
-
+	defer r.cancel()
 	for {
 		select {
 		case req := <-r.new:
@@ -74,7 +70,7 @@ func (r *requester) writeLoop() error {
 				return fmt.Errorf("can't cancel request(%d): %w", req.id, err)
 			}
 		case <-r.ctx.Done():
-			return nil
+			return r.rwc.Close()
 		}
 	}
 }
@@ -94,11 +90,11 @@ func (r *requester) readLoop() error {
 		req := r.rq.Back()
 		if req == nil {
 			_, err := r.rwc.Read([]byte{0})
-			if !errors.Is(err, io.EOF) {
-				return err
+			if errors.Is(err, io.EOF) {
+				return nil
 			}
 
-			return nil
+			return err
 		}
 
 		if req.Id() != id {
