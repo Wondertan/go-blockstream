@@ -33,7 +33,7 @@ func TestBlockStream(t *testing.T) {
 
 	nodes := make([]*BlockStream, nodesCount)
 	for i, h := range hs {
-		nodes[i] = NewBlockStream(ctx, h, bs, access.NewPassingGranter())
+		nodes[i] = NewBlockStream(ctx, h, bs, access.NewGranter())
 	}
 
 	wg := new(sync.WaitGroup)
@@ -41,18 +41,21 @@ func TestBlockStream(t *testing.T) {
 
 	ctx, cancel = context.WithCancel(ctx)
 	sessions := make([]*Session, nodesCount)
+	errs := make([]<-chan error, nodesCount)
 	for i, n := range nodes {
+		peers := make([]peer.ID, 0, nodesCount-1)
+		for _, h := range hs {
+			if h == n.Host {
+				continue
+			}
+			peers = append(peers, h.ID())
+		}
+
+		errs[i] = n.Granter.Grant(context.Background(), tkn, peers...)
+
 		wg.Add(1)
 		go func(i int, n *BlockStream) {
 			defer wg.Done()
-
-			peers := make([]peer.ID, 0, nodesCount-1)
-			for _, h := range hs {
-				if h == n.Host {
-					continue
-				}
-				peers = append(peers, h.ID())
-			}
 
 			var er error
 			sessions[i], er = n.Session(ctx, tkn, false, peers...)
@@ -78,6 +81,12 @@ func TestBlockStream(t *testing.T) {
 	}
 
 	cancel()
+	for _, ch := range errs {
+		for err := range ch {
+			t.Error(err)
+		}
+	}
+
 	for _, n := range nodes {
 		err = n.Close()
 		require.Nil(t, err, err)

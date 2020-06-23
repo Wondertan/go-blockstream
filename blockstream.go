@@ -63,10 +63,11 @@ func NewBlockStream(ctx context.Context, host host.Host, bstore blockstore.Block
 		newCollector(ctx, bs.reqs, bstore, maxMsgSize, closeLog)
 	}
 
-	host.SetStreamHandler(Protocol, func(stream network.Stream) {
-		err := bs.handler(stream)
+	host.SetStreamHandler(Protocol, func(s network.Stream) {
+		err := bs.handler(s)
 		if err != nil {
 			log.Error(err)
+			s.Reset()
 		}
 	})
 	return bs
@@ -97,6 +98,7 @@ func (bs *BlockStream) Session(ctx context.Context, token access.Token, autosave
 
 		err = giveHand(s, token)
 		if err != nil {
+			s.Reset()
 			return nil, err
 		}
 
@@ -122,14 +124,19 @@ func (bs *BlockStream) handler(s network.Stream) error {
 		return err
 	}
 
+	var once sync.Once
 	newResponder(bs.ctx, s, bs.reqs,
 		func(f func() error) {
 			bs.wg.Add(1)
 			if err := f(); err != nil {
 				log.Error(err)
+				s.Reset()
 				done <- err
 			}
 			bs.wg.Done()
+			once.Do(func() {
+				close(done)
+			})
 		},
 	)
 	return nil
