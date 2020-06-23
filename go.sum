@@ -15,8 +15,12 @@ github.com/Kubuxu/go-os-helper v0.0.1/go.mod h1:N8B+I7vPCT80IcP58r50u4+gEEcsZETF
 github.com/OneOfOne/xxhash v1.2.2/go.mod h1:HSdplMjZKSmBqAxg5vPj2TmRDmfkzw+cTzAElWljhcU=
 github.com/Wondertan/go-libp2p-access v0.0.2-0.20200420092536-d65cd5963bbf h1:wAz60pWMV8b4mqW91tYjEx5LwE6yhUv3lDTLBPCLmI0=
 github.com/Wondertan/go-libp2p-access v0.0.2-0.20200420092536-d65cd5963bbf/go.mod h1:NdjiiTvhH1wnVjdVLXG1NTUP/qoUTlcRuLPqSwYy2dE=
+github.com/Wondertan/go-libp2p-access v0.0.2 h1:HLFwOGS6+5v0ij6qj+w+h1usLkgpYF0fEtbABKT9IQc=
+github.com/Wondertan/go-libp2p-access v0.0.2/go.mod h1:NdjiiTvhH1wnVjdVLXG1NTUP/qoUTlcRuLPqSwYy2dE=
 github.com/Wondertan/go-serde v1.0.1-0.20200205133151-591017a5ba0a h1:kprOP4w16AS4ISuEZdoJY9z10MQVPyHzL2jwrigKcJc=
 github.com/Wondertan/go-serde v1.0.1-0.20200205133151-591017a5ba0a/go.mod h1:L/F6D8dbONZicVhLC79ET3NDDbxzCcBzdG92KQgZjs4=
+github.com/Wondertan/go-serde v1.0.1 h1:htNzgf2rsTFOGNJeUSdrtrjC71SrYWrWxk9QrCrah9A=
+github.com/Wondertan/go-serde v1.0.1/go.mod h1:L/F6D8dbONZicVhLC79ET3NDDbxzCcBzdG92KQgZjs4=
 github.com/aead/siphash v1.0.1/go.mod h1:Nywa3cDsYNNK3gaciGTWPwHt0wlpNV15vwmswBAUSII=
 github.com/anmitsu/go-shlex v0.0.0-20161002113705-648efa622239/go.mod h1:2FmKhYUyUczH0OGQWaF5ceTx0UBShxjsH6f8oGKYe2c=
 github.com/armon/consul-api v0.0.0-20180202201655-eb2c6b5be1b6/go.mod h1:grANhF5doyWs3UAsr3K4I6qtAmlQcZDesFNEHPZAzj8=

@@ -3,8 +3,8 @@ module github.com/Wondertan/go-blockstream
 go 1.14
 
 require (
-	github.com/Wondertan/go-libp2p-access v0.0.2-0.20200420092536-d65cd5963bbf
-	github.com/Wondertan/go-serde v1.0.1-0.20200205133151-591017a5ba0a
+	github.com/Wondertan/go-libp2p-access v0.0.2
+	github.com/Wondertan/go-serde v1.0.1
 	github.com/gogo/protobuf v1.3.1
 	github.com/ipfs/go-block-format v0.0.2
 	github.com/ipfs/go-cid v0.0.6
