@@ -13,7 +13,7 @@ import (
 
 type exchange blockstream.BlockStream
 
-func New(bs *blockstream.BlockStream) iexchange.Interface {
+func New(bs *blockstream.BlockStream) iexchange.SessionExchange {
 	return (*exchange)(bs)
 }
 
