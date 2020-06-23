@@ -104,11 +104,12 @@ func (bs *BlockStream) Session(ctx context.Context, token access.Token, autosave
 
 		ses.addProvider(s, func(f func() error) {
 			bs.wg.Add(1)
+			defer bs.wg.Done()
+
 			if err := f(); err != nil {
 				log.Error(err)
 				s.Reset()
 			}
-			bs.wg.Done()
 		})
 	}
 
@@ -129,13 +130,20 @@ func (bs *BlockStream) handler(s network.Stream) error {
 	newResponder(bs.ctx, s, bs.reqs,
 		func(f func() error) {
 			bs.wg.Add(1)
-			if err := f(); err != nil {
+			defer bs.wg.Done()
+
+			err := f()
+			if err != nil {
 				log.Error(err)
-				s.Reset()
-				done <- err
 			}
-			bs.wg.Done()
+
 			once.Do(func() {
+				if err != nil {
+					s.Reset()
+					done <- err
+					return
+				}
+
 				close(done)
 			})
 		},
