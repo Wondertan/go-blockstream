@@ -9,11 +9,12 @@ import (
 	"github.com/ipfs/go-cid"
 )
 
-const (
-	streamBufferSize  = 64
-	streamBufferLimit = 1024
-	requestBufferSize = 8
+var (
+	StreamBufferSize  = 128
+	StreamBufferLimit = 4096
 )
+
+const requestBufferSize = 8
 
 // blockTracker tracks blocks within the session
 type blockTracker interface {
@@ -44,7 +45,7 @@ func newSession(ctx context.Context, trk blockTracker) *Session {
 // Block order is guaranteed to be the same as requested through the `in` chan.
 func (ses *Session) Stream(ctx context.Context, in <-chan []cid.Cid) <-chan blocks.Block {
 	ctx, cancel := context.WithCancel(ctx)
-	buf := NewBuffer(ctx, streamBufferSize, streamBufferLimit)
+	buf := NewBuffer(ctx, StreamBufferSize, StreamBufferLimit)
 	go func() {
 		defer buf.Close()
 		for {

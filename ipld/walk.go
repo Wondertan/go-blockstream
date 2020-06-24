@@ -38,6 +38,12 @@ func NoDedup() walkOption {
 	}
 }
 
+func StreamInBuf(len int) walkOption {
+	return func(w *walkOptions) {
+		w.cidChanLen = len
+	}
+}
+
 // Walk traverses the DAG from given root passing all the nodes to the Handler.
 func Walk(ctx context.Context, id cid.Cid, bs blockstream.BlockStreamer, handler Handler, opts ...walkOption) error {
 	wo := options(handler, opts)
@@ -46,7 +52,7 @@ func Walk(ctx context.Context, id cid.Cid, bs blockstream.BlockStreamer, handler
 	defer cancel()
 
 	remains := 1
-	in := make(chan []cid.Cid, 1)
+	in := make(chan []cid.Cid, wo.cidChanLen)
 	in <- []cid.Cid{id}
 	defer close(in)
 
@@ -101,17 +107,19 @@ func Walk(ctx context.Context, id cid.Cid, bs blockstream.BlockStreamer, handler
 type walkOption func(*walkOptions)
 
 type walkOptions struct {
-	dedup    *cid.Set
-	visitor  Visitor
-	handlers map[uint64]Handler
-	main     Handler
+	cidChanLen int
+	dedup      *cid.Set
+	visitor    Visitor
+	handlers   map[uint64]Handler
+	main       Handler
 }
 
 func options(main Handler, opts []walkOption) *walkOptions {
 	wo := &walkOptions{
-		dedup:    cid.NewSet(),
-		handlers: make(map[uint64]Handler),
-		main:     main,
+		cidChanLen: 16,
+		dedup:      cid.NewSet(),
+		handlers:   make(map[uint64]Handler),
+		main:       main,
 	}
 	for _, opt := range opts {
 		opt(wo)

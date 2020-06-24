@@ -23,8 +23,8 @@ import (
 
 func TestFetchDAG(t *testing.T) {
 	const (
-		nsize = 512
-		rsize = nsize * 256
+		nsize = 256 * 1024
+		rsize = nsize * 4 * 1000
 	)
 
 	ctx, cancel := context.WithCancel(context.Background())
