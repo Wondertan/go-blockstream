@@ -88,7 +88,7 @@ func TestBufferLength(t *testing.T) {
 	buf := NewBuffer(ctx, 128, 128)
 
 	buf.Input() <- bs
-	time.Sleep(10 * time.Microsecond) // fixes flakyness
+	time.Sleep(100 * time.Microsecond) // fixes flakyness
 	assert.Equal(t, len(bs), buf.Len())
 }
 
@@ -208,20 +208,4 @@ func TestBufferCidList(t *testing.T) {
 	out = buf.Dequeue()
 	assert.Equal(t, out, cid.Undef)
 	assert.True(t, buf.Len() == 0)
-}
-
-func TestBufferRace(t *testing.T) {
-	q := newCidQueue(256)
-	_, ids := randBlocks(t, rand.Reader, 10, 256)
-
-	go func() {
-		q.Enqueue(ids[0])
-		q.Enqueue(ids[1])
-		q.Enqueue(ids[2])
-	}()
-	time.Sleep(1 * time.Second)
-
-	q.Dequeue()
-	q.Dequeue()
-	assert.True(t, q.Len() == 1, q.Len())
 }
