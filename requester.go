@@ -7,35 +7,30 @@ import (
 	"io"
 
 	"github.com/ipfs/go-block-format"
-)
 
-// blockPutter is an interface responsible for saving blocks.
-type blockPutter interface {
-	PutMany([]blocks.Block) error
-}
+	"github.com/Wondertan/go-blockstream/block"
+)
 
 // requester is responsible for requesting block from a remote peer.
 // It has to be paired with a responder on the other side of a conversation.
 type requester struct {
 	rwc io.ReadWriteCloser
-	put blockPutter
 
-	new, cncl chan *request
-	rq        *requestQueue
+	new, cncl chan *block.Request
+	rq        *block.RequestQueue
 
 	ctx    context.Context
 	cancel context.CancelFunc
 }
 
 // newRequester creates new requester.
-func newRequester(ctx context.Context, rwc io.ReadWriteCloser, reqs chan *request, put blockPutter, onErr onClose) *requester {
+func newRequester(ctx context.Context, rwc io.ReadWriteCloser, reqs chan *block.Request, onErr сlose) *requester {
 	ctx, cancel := context.WithCancel(ctx)
 	rcv := &requester{
 		rwc:    rwc,
-		put:    put,
 		new:    reqs,
-		cncl:   make(chan *request),
-		rq:     newRequestQueue(ctx.Done()),
+		cncl:   make(chan *block.Request),
+		rq:     block.NewRequestQueue(ctx.Done()),
 		ctx:    ctx,
 		cancel: cancel,
 	}
@@ -59,7 +54,7 @@ func (r *requester) writeLoop() error {
 				case <-r.ctx.Done():
 				}
 
-				return fmt.Errorf("can't writeLoop request(%d): %w", req.id, err)
+				return fmt.Errorf("can't writeLoop request(%d): %w", req.Id(), err)
 			}
 
 			go r.onCancel(req)
@@ -67,7 +62,7 @@ func (r *requester) writeLoop() error {
 		case req := <-r.cncl:
 			err := writeBlocksReq(r.rwc, req.Id(), nil)
 			if err != nil {
-				return fmt.Errorf("can't cancel request(%d): %w", req.id, err)
+				return fmt.Errorf("can't cancel request(%d): %w", req.Id(), err)
 			}
 		case <-r.ctx.Done():
 			return r.rwc.Close()
@@ -87,7 +82,7 @@ func (r *requester) readLoop() error {
 			return err
 		}
 
-		req := r.rq.Back()
+		req := r.rq.BackPopDone()
 		if req == nil {
 			_, err := r.rwc.Read([]byte{0})
 			if errors.Is(err, io.EOF) {
@@ -115,11 +110,6 @@ func (r *requester) readLoop() error {
 			}
 		}
 
-		err = r.put.PutMany(bs)
-		if err != nil {
-			return err
-		}
-
 		if !req.Fill(bs) {
 			r.rq.PopBack()
 		}
@@ -127,7 +117,7 @@ func (r *requester) readLoop() error {
 }
 
 // onCancel handles request cancellation.
-func (r *requester) onCancel(req *request) {
+func (r *requester) onCancel(req *block.Request) {
 	select {
 	case <-req.Done():
 		if !req.Fulfilled() {

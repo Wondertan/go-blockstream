@@ -2,27 +2,26 @@ package blockstream
 
 import (
 	"context"
-	"errors"
 	"sync"
 
 	"github.com/Wondertan/go-libp2p-access"
-	"github.com/ipfs/go-datastore"
-	dsync "github.com/ipfs/go-datastore/sync"
 	"github.com/ipfs/go-ipfs-blockstore"
-	logging "github.com/ipfs/go-log"
+	logging "github.com/ipfs/go-log/v2"
 	"github.com/libp2p/go-libp2p-core/host"
 	"github.com/libp2p/go-libp2p-core/network"
 	"github.com/libp2p/go-libp2p-core/peer"
 	"github.com/libp2p/go-libp2p-core/protocol"
+
+	"github.com/Wondertan/go-blockstream/block"
 )
 
 var log = logging.Logger("blockstream")
 
 const Protocol protocol.ID = "/blockstream/1.0.0"
 
-var errClosed = errors.New("blockstream: closed")
-
 const collectorsDefault = 8
+
+var SessionCacheMemoryLimit uint64 = 500 * 1024 * 1024
 
 type BlockStream struct {
 	ctx context.Context
@@ -31,7 +30,7 @@ type BlockStream struct {
 	Granter access.Granter
 	Blocks  blockstore.Blockstore
 
-	reqs chan *request
+	reqs chan *block.Request
 
 	collectors int
 
@@ -52,7 +51,7 @@ func NewBlockStream(ctx context.Context, host host.Host, bstore blockstore.Block
 		Host:       host,
 		Granter:    granter,
 		Blocks:     bstore,
-		reqs:       make(chan *request, 16),
+		reqs:       make(chan *block.Request, 16),
 		collectors: collectorsDefault,
 	}
 	for _, opt := range opts {
@@ -60,7 +59,7 @@ func NewBlockStream(ctx context.Context, host host.Host, bstore blockstore.Block
 	}
 
 	for range make([]bool, collectorsDefault) {
-		newCollector(ctx, bs.reqs, bstore, maxMsgSize, closeLog)
+		block.NewCollector(ctx, bs.reqs, bstore, maxMsgSize)
 	}
 
 	host.SetStreamHandler(Protocol, func(s network.Stream) {
@@ -82,14 +81,7 @@ func (bs *BlockStream) Close() error {
 // Session starts new BlockStream session between current node and providing 'peers' within the `token` namespace.
 // Autosave defines if received Blocks should be automatically put into Blockstore.
 func (bs *BlockStream) Session(ctx context.Context, token access.Token, autosave bool, peers ...peer.ID) (*Session, error) {
-	var store blockstore.Blockstore
-	if autosave {
-		store = bs.Blocks
-	} else {
-		store = newBlockstore()
-	}
-
-	ses := newSession(ctx, store)
+	ses := newSession(ctx, block.NewLimitedCache(ctx, bs.Blocks, SessionCacheMemoryLimit, autosave))
 	for _, p := range peers {
 		s, err := bs.Host.NewStream(ctx, p, Protocol)
 		if err != nil {
@@ -152,15 +144,11 @@ func (bs *BlockStream) handler(s network.Stream) error {
 }
 
 type onToken func(access.Token) error
-type onClose func(func() error)
+type сlose func(func() error)
 
-var closeLog = func(f func() error) {
+var logClose = func(f func() error) {
 	err := f()
 	if err != nil {
 		log.Error(err)
 	}
-}
-
-func newBlockstore() blockstore.Blockstore {
-	return blockstore.NewBlockstore(dsync.MutexWrap(datastore.NewMapDatastore()))
 }

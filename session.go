@@ -7,35 +7,30 @@ import (
 
 	"github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
+
+	"github.com/Wondertan/go-blockstream/block"
 )
 
 var (
-	StreamBufferSize  = 128
-	StreamBufferLimit = 4096
+	StreamBufferSize = 128
 )
 
 const requestBufferSize = 8
 
-// blockTracker tracks blocks within the session
-type blockTracker interface {
-	blockPutter
-	blockGetter
-}
-
 type Session struct {
 	reqN, prvs uint32
 
-	reqs chan *request
-	trk  blockTracker
+	reqs  chan *block.Request
+	cache block.Cache
 
 	ctx context.Context
 }
 
-func newSession(ctx context.Context, trk blockTracker) *Session {
+func newSession(ctx context.Context, cache block.Cache) *Session {
 	return &Session{
-		reqs: make(chan *request, requestBufferSize),
-		trk:  trk,
-		ctx:  ctx,
+		reqs:  make(chan *block.Request, requestBufferSize),
+		cache: cache,
+		ctx:   ctx,
 	}
 }
 
@@ -45,7 +40,7 @@ func newSession(ctx context.Context, trk blockTracker) *Session {
 // Block order is guaranteed to be the same as requested through the `in` chan.
 func (ses *Session) Stream(ctx context.Context, in <-chan []cid.Cid) <-chan blocks.Block {
 	ctx, cancel := context.WithCancel(ctx)
-	buf := NewBuffer(ctx, StreamBufferSize, StreamBufferLimit)
+	buf := block.NewStream(ctx, ses.cache, StreamBufferSize)
 	go func() {
 		defer buf.Close()
 		for {
@@ -57,7 +52,6 @@ func (ses *Session) Stream(ctx context.Context, in <-chan []cid.Cid) <-chan bloc
 
 				err := buf.Enqueue(ids...)
 				if err != nil {
-					log.Error(err)
 					return
 				}
 
@@ -89,7 +83,7 @@ func (ses *Session) Blocks(ctx context.Context, ids []cid.Cid) (<-chan blocks.Bl
 		}
 	}()
 
-	buf := NewBuffer(ctx, len(ids), len(ids))
+	buf := block.NewStream(ctx, ses.cache, len(ids))
 	err := buf.Enqueue(ids...)
 	if err != nil {
 		return nil, err
@@ -105,15 +99,15 @@ func (ses *Session) Blocks(ctx context.Context, ids []cid.Cid) (<-chan blocks.Bl
 
 // request requests providers in the session for Blocks and writes them out to the chan.
 func (ses *Session) request(ctx context.Context, in []cid.Cid, out chan []blocks.Block) error {
-	in, err := ses.tracked(ctx, in, out)
-	if len(in) == 0 || err != nil {
-		return err
+	in = ses.cached(in)
+	if len(in) == 0 {
+		return nil
 	}
 
 	sets := ses.distribute(in)
-	reqs := make([]*request, len(sets))
+	reqs := make([]*block.Request, len(sets))
 	for i, set := range sets {
-		reqs[i] = newRequestWithChan(ctx, ses.requestId(), set, out)
+		reqs[i] = block.NewRequestWithChan(ctx, ses.requestId(), set, out)
 	}
 
 	for _, req := range reqs {
@@ -140,56 +134,24 @@ func (ses *Session) distribute(ids []cid.Cid) [][]cid.Cid {
 	return sets
 }
 
-// tracked sends known Blocks to the chan and returns ids remained to be fetched.
-func (ses *Session) tracked(ctx context.Context, in []cid.Cid, out chan<- []blocks.Block) ([]cid.Cid, error) {
-	var hv, dhv []cid.Cid // need to make a copy
+// cached checks known Blocks and returns ids remained to be fetched.
+func (ses *Session) cached(in []cid.Cid) []cid.Cid {
+	var out []cid.Cid // need to make a copy
 	for _, id := range in {
 		if !id.Defined() {
 			continue
 		}
 
-		ok, err := ses.trk.Has(id)
-		if err != nil {
-			return nil, err
-		}
-
-		if ok {
-			hv = append(hv, id)
-		} else {
-			dhv = append(dhv, id)
+		if !ses.cache.Has(id) {
+			out = append(out, id)
 		}
 	}
 
-	if len(hv) == 0 {
-		return dhv, nil
-	}
-
-	go func() {
-		bs := make([]blocks.Block, 0, len(hv))
-		for i, id := range hv {
-			b, err := ses.trk.Get(id)
-			if err != nil {
-				log.Errorf("Can't get tracked block: %s", err)
-				continue
-			}
-
-			bs[i] = b
-		}
-
-		select {
-		case out <- bs:
-		case <-ctx.Done():
-			return
-		case <-ses.ctx.Done():
-			return
-		}
-	}()
-
-	return dhv, nil
+	return out
 }
 
-func (ses *Session) addProvider(rwc io.ReadWriteCloser, closing onClose) {
-	newRequester(ses.ctx, rwc, ses.reqs, ses.trk, closing)
+func (ses *Session) addProvider(rwc io.ReadWriteCloser, closing сlose) {
+	newRequester(ses.ctx, rwc, ses.reqs, closing)
 	atomic.AddUint32(&ses.prvs, 1)
 }
 

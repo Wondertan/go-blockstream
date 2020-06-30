@@ -1,4 +1,4 @@
-package blockstream
+package block
 
 import (
 	"context"
@@ -8,44 +8,45 @@ import (
 	"github.com/ipfs/go-cid"
 )
 
-// blockGetter is an interface responsible for getting blocks and their sizes.
-type blockGetter interface {
+// getter is an interface responsible for getting blocks and their sizes.
+type getter interface {
 	GetSize(cid.Cid) (int, error)
 	Get(cid.Cid) (blocks.Block, error)
 	Has(cid.Cid) (bool, error)
 }
 
-// collector aggregates batches of blocks limited to some max size and fills requests with them.
-type collector struct {
+// Collector aggregates batches of blocks limited to some max size and fills requests with them.
+type Collector struct {
 	max, total int
 
-	reqs   <-chan *request
-	blocks blockGetter
+	reqs   <-chan *Request
+	blocks getter
 
 	ctx context.Context
 }
 
-// newCollector creates new collector
-func newCollector(ctx context.Context, reqs <-chan *request, blocks blockGetter, max int, onErr onClose) *collector {
-	c := &collector{
+// NewCollector creates new Collector
+func NewCollector(ctx context.Context, reqs <-chan *Request, blocks getter, max int) *Collector {
+	c := &Collector{
 		max:    max,
 		reqs:   reqs,
 		blocks: blocks,
 		ctx:    ctx,
 	}
-	go onErr(c.collect)
+	go c.collect()
 	return c
 }
 
 // collect waits for new requests and fulfills them.
-func (c *collector) collect() error {
+func (c *Collector) collect() error {
 	for {
 		select {
 		case req := <-c.reqs:
 			for {
 				bs, err := c.getBlocks(req.Remains())
 				if err != nil {
-					return err
+					// TODO Recover request
+					break
 				}
 
 				if !req.Fill(bs) {
@@ -59,7 +60,7 @@ func (c *collector) collect() error {
 }
 
 // getBlocks reads up blocks by their ids but returns if max size limit is reached.
-func (c *collector) getBlocks(ids []cid.Cid) (bs []blocks.Block, err error) {
+func (c *Collector) getBlocks(ids []cid.Cid) (bs []blocks.Block, err error) {
 	c.total = 0
 	for _, id := range ids {
 		size, err := c.blocks.GetSize(id)

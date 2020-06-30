@@ -10,18 +10,21 @@ import (
 	blockstore "github.com/ipfs/go-ipfs-blockstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/Wondertan/go-blockstream/block"
+	"github.com/Wondertan/go-blockstream/test"
 )
 
 func TestRequestResponder(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	bs, ids := randBlocks(t, rand.Reader, 8, 256)
+	bs, ids := test.RandBlocks(t, rand.Reader, 8, 256)
 
-	in, out := make(chan *request, 4), make(chan *request, 4)
+	in, out := make(chan *block.Request, 4), make(chan *block.Request, 4)
 	newRequestPair(ctx, in, out)
 
-	reqIn := newRequest(ctx, 0, ids)
+	reqIn := block.NewRequest(ctx, 0, ids)
 	in <- reqIn
 
 	reqOut := <-out
@@ -46,9 +49,9 @@ func TestSessionStream(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	bstore, ids := randBlockstore(t, rand.Reader, count, size)
+	bstore, ids := test.RandBlockstore(t, rand.Reader, count, size)
 
-	ses := newSession(ctx, &fakeTracker{})
+	ses := newSession(ctx, block.NewSimpleCache())
 	addProvider(ctx, ses, bstore, msgSize)
 	addProvider(ctx, ses, bstore, msgSize)
 	addProvider(ctx, ses, bstore, msgSize)
@@ -77,9 +80,9 @@ func TestSessionBlocks(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	bstore, ids := randBlockstore(t, rand.Reader, count, size)
+	bstore, ids := test.RandBlockstore(t, rand.Reader, count, size)
 
-	ses := newSession(ctx, &fakeTracker{})
+	ses := newSession(ctx, block.NewSimpleCache())
 	addProvider(ctx, ses, bstore, msgSize)
 	addProvider(ctx, ses, bstore, msgSize)
 	addProvider(ctx, ses, bstore, msgSize)
@@ -95,9 +98,9 @@ func TestSessionBlocks(t *testing.T) {
 }
 
 func addProvider(ctx context.Context, ses *Session, bstore blockstore.Blockstore, msgSize int) {
-	reqs := make(chan *request, 8)
+	reqs := make(chan *block.Request, 8)
 	s1, s2 := streamPair()
-	newResponder(ctx, s2, reqs, closeLog)
-	newCollector(ctx, reqs, bstore, msgSize, closeLog)
-	ses.addProvider(s1, closeLog)
+	newResponder(ctx, s2, reqs, logClose)
+	block.NewCollector(ctx, reqs, bstore, msgSize)
+	ses.addProvider(s1, logClose)
 }

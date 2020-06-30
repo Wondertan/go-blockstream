@@ -1,4 +1,4 @@
-package blockstream
+package block
 
 import (
 	"context"
@@ -7,18 +7,20 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/Wondertan/go-blockstream/test"
 )
 
 func TestCollector(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	bstore, ids := randBlockstore(t, rand.Reader, 16, 256)
+	bstore, ids := test.RandBlockstore(t, rand.Reader, 16, 256)
 
-	reqs := make(chan *request, 1)
-	newCollector(ctx, reqs, bstore, 512, closeLog)
+	reqs := make(chan *Request, 1)
+	NewCollector(ctx, reqs, bstore, 512)
 
-	req := newRequest(ctx, 0, ids)
+	req := NewRequest(ctx, 0, ids)
 	reqs <- req
 
 	for i := 0; i < 8; i++ {
@@ -30,7 +32,7 @@ func TestCollector(t *testing.T) {
 		}
 	}
 
-	req = newRequest(ctx, 0, ids)
+	req = NewRequest(ctx, 0, ids)
 	reqs <- req
 
 	for i := 0; i < 8; i++ {

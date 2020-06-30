@@ -7,6 +7,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/Wondertan/go-blockstream/block"
+	"github.com/Wondertan/go-blockstream/test"
 )
 
 func TestRequester(t *testing.T) {
@@ -18,12 +21,12 @@ func TestRequester(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	bs, in := randBlocks(t, rand.Reader, count, size)
+	bs, in := test.RandBlocks(t, rand.Reader, count, size)
 
-	reqs := make(chan *request, 1)
-	s := newTestRequester(t, ctx, reqs, &fakeTracker{})
+	reqs := make(chan *block.Request, 1)
+	s := newTestRequester(t, ctx, reqs)
 
-	req := newRequest(ctx, 0, in)
+	req := block.NewRequest(ctx, 0, in)
 	reqs <- req
 	assertBlockReq(t, s, 0, in)
 
@@ -43,12 +46,12 @@ func TestRequesterCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	reqs := make(chan *request, 1)
-	s := newTestRequester(t, ctx, reqs, &fakeTracker{})
+	reqs := make(chan *block.Request, 1)
+	s := newTestRequester(t, ctx, reqs)
 
-	bs, in := randBlocks(t, rand.Reader, count, size)
+	bs, in := test.RandBlocks(t, rand.Reader, count, size)
 
-	req := newRequest(ctx, 1, in)
+	req := block.NewRequest(ctx, 1, in)
 	reqs <- req
 	req.Cancel()
 

@@ -12,6 +12,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/Wondertan/go-libp2p-access"
+
+	"github.com/Wondertan/go-blockstream/test"
 )
 
 func TestBlockStream(t *testing.T) {
@@ -25,7 +27,7 @@ func TestBlockStream(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	bs, cids := randBlockstore(t, rand.Reader, blocksCount, size)
+	bs, cids := test.RandBlockstore(t, rand.Reader, blocksCount, size)
 
 	net, err := mocknet.FullMeshConnected(ctx, nodesCount)
 	require.Nil(t, err, err)

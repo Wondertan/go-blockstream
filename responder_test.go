@@ -8,23 +8,25 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/Wondertan/go-blockstream/block"
+	"github.com/Wondertan/go-blockstream/test"
 )
 
 func TestResponder(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	bs, ids := randBlocks(t, rand.Reader, 10, 256)
+	bs, ids := test.RandBlocks(t, rand.Reader, 10, 256)
 
-	reqs := make(chan *request, 8)
+	reqs := make(chan *block.Request, 8)
 	s := newTestResponder(t, ctx, reqs)
 
 	err := writeBlocksReq(s, uint32(1), ids[:4])
 	require.Nil(t, err, err)
 
 	req := <-reqs
-	assert.Equal(t, uint32(1), req.id)
-	assert.Equal(t, ids[:4], req.ids)
+	assert.Equal(t, uint32(1), req.Id())
 
 	go func() {
 		<-time.After(time.Millisecond)
@@ -44,21 +46,16 @@ func TestResponder(t *testing.T) {
 	require.Nil(t, err, err)
 
 	req2 := <-reqs
-	assert.Equal(t, uint32(2), req2.id)
-	assert.Equal(t, ids[4:8], req2.ids)
+	assert.Equal(t, uint32(2), req2.Id())
 
-	select {
-	case <-req2.Done():
-	default:
-		t.Error("not closed")
-	}
+	_, ok := req2.Next()
+	assert.False(t, ok)
 
 	err = writeBlocksReq(s, uint32(3), ids[8:])
 	require.Nil(t, err, err)
 
 	req3 := <-reqs
-	assert.Equal(t, uint32(3), req3.id)
-	assert.Equal(t, ids[8:], req3.ids)
+	assert.Equal(t, uint32(3), req3.Id())
 
 	go func() {
 		<-time.After(time.Millisecond)
