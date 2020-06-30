@@ -125,7 +125,7 @@ func (buf *stream) stream(ctx context.Context) {
 			pending = buf.queue.Dequeue() // define newer pending,
 		}
 
-		if toWrite == nil { // if we don't have the pending Block,
+		if toWrite == nil && pending.Defined() { // if we don't have the pending Block,
 			toWrite = buf.cache.Get(pending) // try to get it from the cache,
 			if toWrite != nil {              // and on success
 				output = buf.output // unblock output

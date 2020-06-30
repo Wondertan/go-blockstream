@@ -3,6 +3,7 @@ package block
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 
@@ -18,7 +19,6 @@ type Cache interface {
 	Add(blocks.Block)
 	Get(cid.Cid) blocks.Block
 	Has(cid.Cid) bool
-	Close()
 }
 
 type limitedCache struct {
@@ -26,7 +26,6 @@ type limitedCache struct {
 	disk   blockstore.Blockstore
 
 	memoryUsage, memoryLimit uint64
-	autosave                 bool
 
 	ctx     context.Context
 	toSave  chan blocks.Block
@@ -37,7 +36,6 @@ func NewLimitedCache(ctx context.Context, store blockstore.Blockstore, memoryLim
 	bc := &limitedCache{
 		disk:        store,
 		memoryLimit: memoryLimit,
-		autosave:    autosave,
 		ctx:         ctx,
 		toSave:      make(chan blocks.Block, 32),
 		memLock:     make(chan struct{}, 1),
@@ -46,6 +44,22 @@ func NewLimitedCache(ctx context.Context, store blockstore.Blockstore, memoryLim
 	for i := 0; i < savers; i++ {
 		go bc.saver()
 	}
+
+	if !autosave {
+		go func() {
+			<-ctx.Done()
+			bc.memory.Range(func(key, value interface{}) bool {
+				err := bc.disk.DeleteBlock(key.(cid.Cid))
+				if err != nil {
+					log.Errorf("Can't delete Block on closing: %w", err)
+				}
+
+				bc.memory.Delete(key)
+				return true
+			})
+		}()
+	}
+
 	return bc
 }
 
@@ -65,6 +79,9 @@ func (bc *limitedCache) Add(b blocks.Block) {
 }
 
 func (bc *limitedCache) Get(id cid.Cid) blocks.Block {
+	if !id.Defined() {
+		fmt.Println("hi")
+	}
 	e, _ := bc.memory.Load(id) // try getting entry from the Map
 	if e == nil {
 		b, err := bc.disk.Get(id) // if not in map, should be on a disk.
@@ -84,20 +101,6 @@ func (bc *limitedCache) Get(id cid.Cid) blocks.Block {
 func (bc *limitedCache) Has(id cid.Cid) bool {
 	_, ok := bc.memory.Load(id)
 	return ok
-}
-
-func (bc *limitedCache) Close() {
-	if !bc.autosave {
-		bc.memory.Range(func(key, value interface{}) bool {
-			err := bc.disk.DeleteBlock(key.(cid.Cid))
-			if err != nil {
-				log.Errorf("Can't delete Block on closing: %w", err)
-			}
-
-			bc.memory.Delete(key)
-			return true
-		})
-	}
 }
 
 func (bc *limitedCache) saver() {
@@ -157,11 +160,4 @@ func (s *simpleCache) Get(c cid.Cid) blocks.Block {
 func (s *simpleCache) Has(c cid.Cid) bool {
 	_, ok := s.m.Load(c)
 	return ok
-}
-
-func (s *simpleCache) Close() {
-	s.m.Range(func(key, value interface{}) bool {
-		s.m.Delete(key)
-		return true
-	})
 }

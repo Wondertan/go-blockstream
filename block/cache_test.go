@@ -18,7 +18,6 @@ func TestBlockCache(t *testing.T) {
 	const limit = uint64(2048)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	bs := blockstore.NewBlockstore(dsync.MutexWrap(datastore.NewMapDatastore()))
 	bc := NewLimitedCache(ctx, bs, limit, false)
@@ -38,7 +37,9 @@ func TestBlockCache(t *testing.T) {
 	}
 	assert.Equal(t, uint64(0), bc.MemoryUsage())
 
-	bc.Close()
+	cancel()
+	time.Sleep(time.Millisecond)
+
 	bc.memory.Range(func(key, value interface{}) bool {
 		t.Error("not empty")
 		return false
