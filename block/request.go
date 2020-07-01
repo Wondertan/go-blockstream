@@ -2,6 +2,7 @@ package block
 
 import (
 	"context"
+	"io"
 	"sync/atomic"
 
 	blocks "github.com/ipfs/go-block-format"
@@ -18,6 +19,7 @@ type Request struct {
 	bs  chan []blocks.Block
 	ids []cid.Cid
 
+	err    error
 	done   <-chan struct{}
 	cancel context.CancelFunc
 }
@@ -60,16 +62,20 @@ func (req *Request) Remains() []cid.Cid {
 
 // Next waits for new incoming blocks.
 // Also returns false when Request is fulfilled.
-func (req *Request) Next() ([]blocks.Block, bool) {
+func (req *Request) Next() ([]blocks.Block, error) {
 	select {
 	case bs := <-req.bs:
-		return bs, true
+		return bs, nil
 	case <-req.Done():
 		select {
 		case bs := <-req.bs:
-			return bs, true
+			return bs, nil
 		default:
-			return nil, false
+			if req.err != nil {
+				return nil, req.err
+			}
+
+			return nil, io.EOF
 		}
 	}
 }
@@ -90,5 +96,20 @@ func (req *Request) Fill(bs []blocks.Block) bool {
 		return true
 	case <-req.Done():
 		return false
+	}
+}
+
+// Error cancels the request with an error.
+func (req *Request) Error(err error) {
+	if err == nil {
+		return
+	}
+
+	select {
+	case <-req.Done():
+		return
+	default:
+		req.err = err
+		req.Cancel()
 	}
 }

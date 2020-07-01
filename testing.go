@@ -30,17 +30,12 @@ func assertBlockReq(t *testing.T, r io.Reader, in uint32, ids []cid.Cid) {
 	assert.Equal(t, in, id)
 }
 
-func assertBlockReqCancel(t *testing.T, r io.Reader, in uint32) {
-	id, out, err := readBlocksReq(r)
-	require.Nil(t, err, err)
-	assert.Len(t, out, 0)
-	assert.Equal(t, in, id)
-}
-
-func assertBlockResp(t *testing.T, r io.Reader, in uint32, ids []cid.Cid) {
-	id, out, err := readBlocksResp(r)
+func assertBlockResp(t *testing.T, r io.Reader, in uint32, ids []cid.Cid, errIn error) {
+	id, out, errOut, err := readBlocksResp(r)
 	require.Nil(t, err, err)
 	assert.Equal(t, in, id)
+	assert.Equal(t, len(ids), len(out))
+	assert.Equal(t, errIn, errOut)
 	for i, b := range out {
 		_, err = newBlockCheckCid(b, ids[i])
 		require.Nil(t, err, err)

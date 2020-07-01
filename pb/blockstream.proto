@@ -10,9 +10,16 @@ message BlockStream {
         HANDSHAKE = 3;
     }
 
+    enum ErrorCode {
+        Null = 0;
+        Unknown = 1;
+        NotFound = 2;
+    }
+
     Type type = 1; // Message type.
     uint32 id = 2;
     repeated bytes cids = 3; // REQ: Ids of the blocks.
     repeated bytes blocks = 4; // RESP: The blocks themselves.
     string token = 5; // HS: Session id/token to control access.
+    ErrorCode error = 6; // Defines error for request.
 }

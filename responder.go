@@ -74,12 +74,12 @@ func (r *responder) writeLoop() error {
 		}
 
 		for {
-			bs, ok := req.Next()
-			if !ok {
+			bs, reqErr := req.Next()
+			if errors.Is(reqErr, io.EOF) {
 				break
 			}
 
-			err := writeBlocksResp(r.rwc, req.Id(), bs)
+			err := writeBlocksResp(r.rwc, req.Id(), bs, reqErr)
 			if err != nil {
 				return err
 			}

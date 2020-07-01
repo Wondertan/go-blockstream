@@ -1,6 +1,7 @@
 package blockstream
 
 import (
+	"errors"
 	"fmt"
 	"io"
 
@@ -8,12 +9,35 @@ import (
 	"github.com/Wondertan/go-serde"
 	"github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
+	blockstore "github.com/ipfs/go-ipfs-blockstore"
 	"github.com/libp2p/go-libp2p-core/network"
 
 	"github.com/Wondertan/go-blockstream/pb"
 )
 
 var maxMsgSize = network.MessageSizeMax
+
+var unknownError = errors.New("blockstream: unknown error from remote peer")
+
+var errorMap = map[pb.BlockStream_ErrorCode]error{
+	pb.Null:     nil,
+	pb.Unknown:  unknownError,
+	pb.NotFound: blockstore.ErrNotFound,
+}
+
+func codeFor(given error) pb.BlockStream_ErrorCode {
+	for code, err := range errorMap {
+		if errors.Is(given, err) {
+			return code
+		}
+	}
+
+	return pb.Unknown
+}
+
+func errorFor(code pb.BlockStream_ErrorCode) error {
+	return errorMap[code]
+}
 
 func giveHand(rw io.ReadWriter, out access.Token) error {
 	err := writeToken(rw, out)
@@ -55,7 +79,7 @@ func takeHand(rw io.ReadWriter, check onToken) (access.Token, error) {
 func writeToken(w io.Writer, token access.Token) error {
 	_, err := serde.Write(w, &pb.BlockStream{Type: pb.HANDSHAKE, Token: string(token)})
 	if err != nil {
-		return fmt.Errorf("can't writeLoop token: %w", err)
+		return fmt.Errorf("can't write token: %w", err)
 	}
 
 	return nil
@@ -83,7 +107,7 @@ func writeBlocksReq(w io.Writer, id uint32, ids []cid.Cid) error {
 
 	_, err := serde.Write(w, req)
 	if err != nil {
-		return fmt.Errorf("can't writeLoop blocks request: %w", err)
+		return fmt.Errorf("can't write blocks request: %w", err)
 	}
 
 	return nil
@@ -100,7 +124,12 @@ func readBlocksReq(r io.Reader) (uint32, []cid.Cid, error) {
 		return 0, nil, fmt.Errorf("unexpected message type - %s", msg.Type)
 	}
 
-	ids := make([]cid.Cid, len(msg.Cids))
+	l := len(msg.Cids)
+	if l == 0 {
+		return msg.Id, nil, nil
+	}
+
+	ids := make([]cid.Cid, l)
 	for i, b := range msg.Cids {
 		ids[i], err = cid.Cast(b)
 		if err != nil {
@@ -111,32 +140,32 @@ func readBlocksReq(r io.Reader) (uint32, []cid.Cid, error) {
 	return msg.Id, ids, nil
 }
 
-func writeBlocksResp(rw io.Writer, id uint32, bs []blocks.Block) error {
-	msg := &pb.BlockStream{Type: pb.RESPONSE, Id: id, Blocks: make([][]byte, len(bs))}
+func writeBlocksResp(rw io.Writer, id uint32, bs []blocks.Block, reqErr error) error {
+	msg := &pb.BlockStream{Type: pb.RESPONSE, Id: id, Blocks: make([][]byte, len(bs)), Error: codeFor(reqErr)}
 	for i, b := range bs {
 		msg.Blocks[i] = b.RawData()
 	}
 
 	_, err := serde.Write(rw, msg)
 	if err != nil {
-		return fmt.Errorf("can't writeLoop blocks response: %w", err)
+		return fmt.Errorf("can't write blocks response: %w", err)
 	}
 
 	return nil
 }
 
-func readBlocksResp(rw io.Reader) (uint32, [][]byte, error) {
+func readBlocksResp(rw io.Reader) (uint32, [][]byte, error, error) {
 	msg := new(pb.BlockStream)
 	_, err := serde.Read(rw, msg)
 	if err != nil {
-		return 0, nil, fmt.Errorf("can't read blocks response: %w", err)
+		return 0, nil, nil, fmt.Errorf("can't read blocks response: %w", err)
 	}
 
 	if msg.Type != pb.RESPONSE {
-		return 0, nil, fmt.Errorf("unexpected message type - %s", msg.Type)
+		return 0, nil, nil, fmt.Errorf("unexpected message type - %s", msg.Type)
 	}
 
-	return msg.Id, msg.Blocks, nil
+	return msg.Id, msg.Blocks, errorFor(msg.Error), nil
 }
 
 func newBlockCheckCid(data []byte, expected cid.Cid) (blocks.Block, error) {

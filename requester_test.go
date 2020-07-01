@@ -3,8 +3,10 @@ package blockstream
 import (
 	"context"
 	"crypto/rand"
+	"io"
 	"testing"
 
+	blockstore "github.com/ipfs/go-ipfs-blockstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -26,42 +28,63 @@ func TestRequester(t *testing.T) {
 	reqs := make(chan *block.Request, 1)
 	s := newTestRequester(t, ctx, reqs)
 
+	// normal case
 	req := block.NewRequest(ctx, 0, in)
 	reqs <- req
 	assertBlockReq(t, s, 0, in)
 
-	err := writeBlocksResp(s, 0, bs)
+	err := writeBlocksResp(s, 0, bs, nil)
 	require.Nil(t, err, err)
 
-	out, _ := req.Next()
+	out, err := req.Next()
+	assert.Nil(t, err)
 	assert.Equal(t, bs, out)
-}
 
-func TestRequesterCancel(t *testing.T) {
-	const (
-		count = 32
-		size  = 32
-	)
+	out, err = req.Next()
+	assert.Equal(t, io.EOF, err)
+	assert.Nil(t, out)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	reqs := make(chan *block.Request, 1)
-	s := newTestRequester(t, ctx, reqs)
-
-	bs, in := test.RandBlocks(t, rand.Reader, count, size)
-
-	req := block.NewRequest(ctx, 1, in)
+	// cancel case
+	req = block.NewRequest(ctx, 1, in)
 	reqs <- req
 	req.Cancel()
 
 	assertBlockReq(t, s, 1, in)
-	assertBlockReqCancel(t, s, 1)
+	assertBlockReq(t, s, 1, nil)
 
-	err := writeBlocksResp(s, 1, bs)
+	err = writeBlocksResp(s, 1, bs, nil)
 	require.Nil(t, err, err)
 
-	bs, ok := req.Next()
+	out, err = req.Next()
+	assert.Nil(t, out)
+	assert.Equal(t, io.EOF, err)
+
+	// another normal case
+	req = block.NewRequest(ctx, 2, in)
+	reqs <- req
+	assertBlockReq(t, s, 2, in)
+
+	err = writeBlocksResp(s, 2, bs, nil)
+	require.Nil(t, err, err)
+
+	out, err = req.Next()
+	assert.Nil(t, err)
+	assert.Equal(t, bs, out)
+
+	out, err = req.Next()
+	assert.Equal(t, io.EOF, err)
+	assert.Nil(t, out)
+
+	// error case
+	req = block.NewRequest(ctx, 3, in)
+	reqs <- req
+
+	assertBlockReq(t, s, 3, in)
+
+	err = writeBlocksResp(s, 3, nil, blockstore.ErrNotFound)
+	require.Nil(t, err, err)
+
+	bs, err = req.Next()
 	assert.Nil(t, bs)
-	assert.False(t, ok)
+	assert.Equal(t, blockstore.ErrNotFound, err)
 }

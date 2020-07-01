@@ -73,7 +73,7 @@ func (r *requester) writeLoop() error {
 // readLoop is a long running method which receives requested blocks from the remote responder and fulfills queued request.
 func (r *requester) readLoop() error {
 	for {
-		id, data, err := readBlocksResp(r.rwc)
+		id, data, reqErr, err := readBlocksResp(r.rwc)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				return nil
@@ -93,7 +93,12 @@ func (r *requester) readLoop() error {
 		}
 
 		if req.Id() != id {
-			log.Warnf("Received Blocks for wrong request(%d), skipping...", id)
+			log.Warnf("Received Block response for wrong request(%d), skipping...", id)
+			continue
+		}
+
+		if reqErr != nil {
+			req.Error(reqErr)
 			continue
 		}
 
