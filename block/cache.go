@@ -3,16 +3,19 @@ package block
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sync"
 	"sync/atomic"
 
 	blocks "github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
-	blockstore "github.com/ipfs/go-ipfs-blockstore"
+	"github.com/ipfs/go-datastore"
+	"github.com/ipfs/go-datastore/namespace"
+	dshelp "github.com/ipfs/go-ipfs-ds-help"
 )
 
 const savers = 8
+
+var prefix = datastore.NewKey("blockstream")
 
 // Cache is cache used within streams
 type Cache interface {
@@ -23,7 +26,7 @@ type Cache interface {
 
 type limitedCache struct {
 	memory sync.Map
-	disk   blockstore.Blockstore
+	disk   datastore.Datastore
 
 	memoryUsage, memoryLimit uint64
 
@@ -32,9 +35,9 @@ type limitedCache struct {
 	memLock chan struct{}
 }
 
-func NewLimitedCache(ctx context.Context, store blockstore.Blockstore, memoryLimit uint64, autosave bool) *limitedCache {
+func NewLimitedCache(ctx context.Context, store datastore.Datastore, memoryLimit uint64) *limitedCache {
 	bc := &limitedCache{
-		disk:        store,
+		disk:        namespace.Wrap(store, prefix),
 		memoryLimit: memoryLimit,
 		ctx:         ctx,
 		toSave:      make(chan blocks.Block, 32),
@@ -45,20 +48,18 @@ func NewLimitedCache(ctx context.Context, store blockstore.Blockstore, memoryLim
 		go bc.saver()
 	}
 
-	if !autosave {
-		go func() {
-			<-ctx.Done()
-			bc.memory.Range(func(key, value interface{}) bool {
-				err := bc.disk.DeleteBlock(key.(cid.Cid))
-				if err != nil {
-					log.Errorf("Can't delete Block on closing: %w", err)
-				}
+	go func() {
+		<-ctx.Done()
+		bc.memory.Range(func(key, value interface{}) bool {
+			err := bc.disk.Delete(dshelp.MultihashToDsKey(key.(cid.Cid).Hash()))
+			if err != nil {
+				log.Errorf("Can't delete cached item: %w", err)
+			}
 
-				bc.memory.Delete(key)
-				return true
-			})
-		}()
-	}
+			bc.memory.Delete(key)
+			return true
+		})
+	}()
 
 	return bc
 }
@@ -79,16 +80,14 @@ func (bc *limitedCache) Add(b blocks.Block) {
 }
 
 func (bc *limitedCache) Get(id cid.Cid) blocks.Block {
-	if !id.Defined() {
-		fmt.Println("hi")
-	}
 	e, _ := bc.memory.Load(id) // try getting entry from the Map
 	if e == nil {
-		b, err := bc.disk.Get(id) // if not in map, should be on a disk.
-		if err != nil && !errors.Is(err, blockstore.ErrNotFound) {
-			log.Errorf("Can't get the block: %w", err)
+		bdata, err := bc.disk.Get(dshelp.MultihashToDsKey(id.Hash())) // if not in map, should be on a disk.
+		if err != nil && !errors.Is(err, datastore.ErrNotFound) {
+			log.Errorf("Can't get the Block(%s): %w", id.String(), err)
 		}
 
+		b, _ := blocks.NewBlockWithCid(bdata, id)
 		return b // or requested before it was added.
 	}
 	b := e.(blocks.Block)
@@ -107,9 +106,9 @@ func (bc *limitedCache) saver() {
 	for {
 		select {
 		case b := <-bc.toSave:
-			err := bc.disk.Put(b)
+			err := bc.disk.Put(dshelp.MultihashToDsKey(b.Cid().Hash()), b.RawData())
 			if err != nil {
-				log.Errorf("Can't save the block: %w", err)
+				log.Errorf("Can't save the Block(%s): %w", b.Cid().String(), err)
 				continue
 			}
 
@@ -154,6 +153,8 @@ func (s *simpleCache) Get(c cid.Cid) blocks.Block {
 	if !ok {
 		return nil
 	}
+
+	s.m.Delete(c)
 	return b.(blocks.Block)
 }
 
