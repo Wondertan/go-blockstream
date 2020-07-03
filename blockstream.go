@@ -21,8 +21,6 @@ const Protocol protocol.ID = "/blockstream/1.0.0"
 
 const collectorsDefault = 8
 
-var SessionCacheMemoryLimit uint64 = 500 * 1024 * 1024
-
 type BlockStream struct {
 	ctx context.Context
 
@@ -81,7 +79,7 @@ func (bs *BlockStream) Close() error {
 // Session starts new BlockStream session between current node and providing 'peers' within the `token` namespace.
 // Autosave defines if received Blocks should be automatically put into Blockstore.
 func (bs *BlockStream) Session(ctx context.Context, token access.Token, autosave bool, peers ...peer.ID) (*Session, error) {
-	ses := newSession(ctx, block.NewSimpleCache())
+	ses := newSession(ctx)
 	for _, p := range peers {
 		s, err := bs.Host.NewStream(ctx, p, Protocol)
 		if err != nil {

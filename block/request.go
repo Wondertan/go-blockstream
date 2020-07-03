@@ -9,9 +9,6 @@ import (
 	"github.com/ipfs/go-cid"
 )
 
-// blocksBufLen defines length of a Request block chan buffer.
-const blocksBufLen = 8
-
 // Request is a tuple of Request Request params.
 type Request struct {
 	id, fld uint32
@@ -26,13 +23,8 @@ type Request struct {
 
 // NewRequest creates new Request.
 func NewRequest(ctx context.Context, id uint32, ids []cid.Cid) *Request {
-	return NewRequestWithChan(ctx, id, ids, make(chan []blocks.Block, blocksBufLen))
-}
-
-// NewRequestWithChan creates new Request with given blocks channel.
-func NewRequestWithChan(ctx context.Context, id uint32, ids []cid.Cid, bs chan []blocks.Block) *Request {
 	ctx, cancel := context.WithCancel(ctx)
-	return &Request{id: id, bs: bs, ids: ids, done: ctx.Done(), cancel: cancel}
+	return &Request{id: id, bs: make(chan []blocks.Block, len(ids)/2), ids: ids, done: ctx.Done(), cancel: cancel}
 }
 
 // Id returns Request's id.

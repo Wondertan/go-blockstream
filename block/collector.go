@@ -6,46 +6,36 @@ import (
 
 	blocks "github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
+	blockstore "github.com/ipfs/go-ipfs-blockstore"
 )
-
-// getter is an interface responsible for getting blocks and their sizes.
-type getter interface {
-	GetSize(cid.Cid) (int, error)
-	Get(cid.Cid) (blocks.Block, error)
-	Has(cid.Cid) (bool, error)
-}
 
 // Collector aggregates batches of blocks limited to some max size and fills requests with them.
 type Collector struct {
 	max, total int
 
 	reqs   <-chan *Request
-	blocks getter
+	blocks blockstore.Blockstore
 
 	ctx context.Context
 }
 
 // NewCollector creates new Collector
-func NewCollector(ctx context.Context, reqs <-chan *Request, blocks getter, max int) *Collector {
-	c := &Collector{
-		max:    max,
-		reqs:   reqs,
-		blocks: blocks,
-		ctx:    ctx,
-	}
+func NewCollector(ctx context.Context, reqs <-chan *Request, blocks blockstore.Blockstore, max int) *Collector {
+	c := &Collector{max: max, reqs: reqs, blocks: blocks, ctx: ctx}
 	go c.collect()
 	return c
 }
 
 // collect waits for new requests and fulfills them.
-func (c *Collector) collect() error {
+func (c *Collector) collect() {
 	for {
 		select {
 		case req := <-c.reqs:
 			for {
 				bs, err := c.getBlocks(req.Remains())
 				if err != nil {
-					// TODO Recover request
+					req.Fill(bs)
+					req.Error(err)
 					break
 				}
 
@@ -54,7 +44,7 @@ func (c *Collector) collect() error {
 				}
 			}
 		case <-c.ctx.Done():
-			return nil
+			return
 		}
 	}
 }

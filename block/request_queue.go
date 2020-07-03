@@ -26,11 +26,13 @@ func (rq *RequestQueue) Len() int {
 	return rq.l.Len()
 }
 
-func (rq *RequestQueue) Enqueue(req *Request) {
+func (rq *RequestQueue) Enqueue(reqs ...*Request) {
 	rq.m.Lock()
 	defer rq.m.Unlock()
 
-	rq.l.PushFront(req)
+	for _, req := range reqs {
+		rq.l.PushFront(req)
+	}
 	rq.signal()
 }
 

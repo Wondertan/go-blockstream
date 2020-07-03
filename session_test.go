@@ -3,6 +3,7 @@ package blockstream
 import (
 	"context"
 	"crypto/rand"
+	"io"
 	"testing"
 
 	blocks "github.com/ipfs/go-block-format"
@@ -33,9 +34,14 @@ func TestRequestResponder(t *testing.T) {
 	}
 
 	for _, b := range bs {
-		bs, _ := reqIn.Next()
+		bs, err := reqIn.Next()
+		assert.Nil(t, err)
 		assert.Equal(t, b, bs[0])
 	}
+
+	bs, err := reqIn.Next()
+	assert.Nil(t, bs)
+	assert.Equal(t, io.EOF, err)
 }
 
 func TestSessionStream(t *testing.T) {
@@ -51,7 +57,7 @@ func TestSessionStream(t *testing.T) {
 
 	bstore, ids := test.RandBlockstore(t, rand.Reader, count, size)
 
-	ses := newSession(ctx, block.NewSimpleCache())
+	ses := newSession(ctx)
 	addProvider(ctx, ses, bstore, msgSize)
 	addProvider(ctx, ses, bstore, msgSize)
 	addProvider(ctx, ses, bstore, msgSize)
@@ -82,7 +88,7 @@ func TestSessionBlocks(t *testing.T) {
 
 	bstore, ids := test.RandBlockstore(t, rand.Reader, count, size)
 
-	ses := newSession(ctx, block.NewSimpleCache())
+	ses := newSession(ctx)
 	addProvider(ctx, ses, bstore, msgSize)
 	addProvider(ctx, ses, bstore, msgSize)
 	addProvider(ctx, ses, bstore, msgSize)
@@ -95,6 +101,37 @@ func TestSessionBlocks(t *testing.T) {
 
 	assertChan(t, ch1, ids[:count/2], count/2)
 	assertChan(t, ch2, ids[count/2:], count/2)
+}
+
+func TestSessionNotFound(t *testing.T) {
+	const (
+		count   = 10
+		size    = 64
+		msgSize = 256
+		missing = 5
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	bstore, ids := test.RandBlockstore(t, rand.Reader, count, size)
+	bstore.DeleteBlock(ids[missing])
+
+	ses := newSession(ctx)
+	addProvider(ctx, ses, bstore, msgSize)
+	addProvider(ctx, ses, bstore, msgSize)
+	addProvider(ctx, ses, bstore, msgSize)
+
+	ch, err := ses.Blocks(ctx, ids)
+	require.Nil(t, err, err)
+
+	for range make([]bool, missing) {
+		_, ok := <-ch
+		assert.True(t, ok)
+	}
+
+	_, ok := <-ch
+	assert.False(t, ok)
 }
 
 func addProvider(ctx context.Context, ses *Session, bstore blockstore.Blockstore, msgSize int) {

@@ -11,26 +11,19 @@ import (
 	"github.com/Wondertan/go-blockstream/block"
 )
 
-var (
-	StreamBufferSize = 128
-)
-
 const requestBufferSize = 8
 
 type Session struct {
 	reqN, prvs uint32
 
-	reqs  chan *block.Request
-	cache block.Cache
-
-	ctx context.Context
+	reqs chan *block.Request
+	ctx  context.Context
 }
 
-func newSession(ctx context.Context, cache block.Cache) *Session {
+func newSession(ctx context.Context) *Session {
 	return &Session{
-		reqs:  make(chan *block.Request, requestBufferSize),
-		cache: cache,
-		ctx:   ctx,
+		reqs: make(chan *block.Request, requestBufferSize),
+		ctx:  ctx,
 	}
 }
 
@@ -40,9 +33,8 @@ func newSession(ctx context.Context, cache block.Cache) *Session {
 // Block order is guaranteed to be the same as requested through the `in` chan.
 func (ses *Session) Stream(ctx context.Context, in <-chan []cid.Cid) <-chan blocks.Block {
 	ctx, cancel := context.WithCancel(ctx)
-	buf := block.NewStream(ctx, ses.cache, StreamBufferSize)
+	s := block.NewStream(ctx)
 	go func() {
-		defer buf.Close()
 		for {
 			select {
 			case ids, ok := <-in:
@@ -50,15 +42,12 @@ func (ses *Session) Stream(ctx context.Context, in <-chan []cid.Cid) <-chan bloc
 					return
 				}
 
-				err := buf.Enqueue(ids...)
-				if err != nil {
-					return
+				reqs := ses.request(ctx, ids)
+				if len(reqs) == 0 {
+					continue
 				}
 
-				err = ses.request(ctx, ids, buf.Input())
-				if err != nil {
-					return
-				}
+				s.Enqueue(reqs...)
 			case <-ses.ctx.Done():
 				cancel()
 				return
@@ -68,7 +57,7 @@ func (ses *Session) Stream(ctx context.Context, in <-chan []cid.Cid) <-chan bloc
 		}
 	}()
 
-	return buf.Output()
+	return s.Output()
 }
 
 // Blocks fetches Blocks by their CIDs evenly from the remote providers in the session.
@@ -83,71 +72,50 @@ func (ses *Session) Blocks(ctx context.Context, ids []cid.Cid) (<-chan blocks.Bl
 		}
 	}()
 
-	buf := block.NewStream(ctx, ses.cache, len(ids))
-	err := buf.Enqueue(ids...)
-	if err != nil {
-		return nil, err
+	reqs := ses.request(ctx, ids)
+	if len(reqs) == 0 {
+		ch := make(chan blocks.Block)
+		close(ch)
+		return ch, nil
 	}
 
-	err = ses.request(ctx, ids, buf.Input())
-	if err != nil {
-		return nil, err
-	}
-
-	return buf.Output(), buf.Close()
+	s := block.NewStream(ctx)
+	s.Enqueue(reqs...)
+	return s.Output(), nil
 }
 
 // request requests providers in the session for Blocks and writes them out to the chan.
-func (ses *Session) request(ctx context.Context, in []cid.Cid, out chan []blocks.Block) error {
-	in = ses.cached(in)
-	if len(in) == 0 {
-		return nil
-	}
+func (ses *Session) request(ctx context.Context, ids []cid.Cid) (reqs []*block.Request) {
+	sets := ses.distribute(ids)
+	reqs = make([]*block.Request, 0, len(sets))
+	for _, set := range sets {
+		if len(set) == 0 {
+			continue
+		}
 
-	sets := ses.distribute(in)
-	reqs := make([]*block.Request, len(sets))
-	for i, set := range sets {
-		reqs[i] = block.NewRequestWithChan(ctx, ses.requestId(), set, out)
-	}
-
-	for _, req := range reqs {
+		req := block.NewRequest(ctx, ses.requestId(), set)
 		select {
 		case ses.reqs <- req:
+			reqs = append(reqs, req)
 		case <-ses.ctx.Done():
-			return ses.ctx.Err()
+			return
 		case <-ctx.Done():
-			return ctx.Err()
+			return
 		}
 	}
 
-	return nil
+	return
 }
 
 // distribute splits ids between providers to download from multiple sources.
 func (ses *Session) distribute(ids []cid.Cid) [][]cid.Cid {
-	l := int(atomic.LoadUint32(&ses.prvs))
-	sets := make([][]cid.Cid, l)
-	for i, k := range ids {
-		sets[i%l] = append(sets[i%l], k)
+	prs, l := int(atomic.LoadUint32(&ses.prvs)), len(ids)
+	sets := make([][]cid.Cid, prs)
+	for i := 0; i < prs; i++ {
+		sets[i] = ids[i*l/prs : (i+1)*l/prs]
 	}
 
 	return sets
-}
-
-// cached checks known Blocks and returns ids remained to be fetched.
-func (ses *Session) cached(in []cid.Cid) []cid.Cid {
-	var out []cid.Cid // need to make a copy
-	for _, id := range in {
-		if !id.Defined() {
-			continue
-		}
-
-		if !ses.cache.Has(id) {
-			out = append(out, id)
-		}
-	}
-
-	return out
 }
 
 func (ses *Session) addProvider(rwc io.ReadWriteCloser, closing сlose) {
