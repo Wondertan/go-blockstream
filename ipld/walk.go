@@ -2,6 +2,7 @@ package ipld
 
 import (
 	"context"
+	"errors"
 
 	"github.com/ipfs/go-cid"
 	format "github.com/ipfs/go-ipld-format"
@@ -59,7 +60,10 @@ func Walk(ctx context.Context, id cid.Cid, bs blockstream.BlockStreamer, handler
 	out := bs.Stream(ctx, in)
 	for {
 		select {
-		case b := <-out:
+		case b, ok := <-out:
+			if !ok {
+				return errors.New("stream channel closed")
+			}
 			remains--
 
 			nd, err := format.Decode(b)
