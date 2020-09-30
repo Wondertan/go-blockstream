@@ -78,15 +78,18 @@ func Walk(ctx context.Context, id cid.Cid, bs blockstream.BlockStreamer, handler
 
 			ids := make([]cid.Cid, 0, len(nd.Links()))
 			for _, l := range nd.Links() {
+				if l.Cid.Type() != cid.Raw {
+					ids = append(ids, l.Cid)
+					continue
+				}
+
 				v, err := wo.visit(l.Cid)
 				if err != nil {
 					return err
 				}
-				if !v {
-					continue
+				if v {
+					ids = append(ids, l.Cid)
 				}
-
-				ids = append(ids, l.Cid)
 			}
 
 			if len(ids) == 0 {
