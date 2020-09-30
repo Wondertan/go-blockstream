@@ -70,9 +70,15 @@ func TestSessionStream(t *testing.T) {
 		close(in)
 	}()
 
-	out := ses.Stream(ctx, in)
+	out, err := ses.Stream(ctx, in)
 	for i := 0; i < times; i++ {
-		assertChan(t, out, ids[i*count/times:(i+1)*count/times], count/times)
+		select {
+		case err := <-err:
+			assert.Nil(t, err, err)
+			break
+		default:
+			assertChan(t, out, ids[i*count/times:(i+1)*count/times], count/times)
+		}
 	}
 }
 

@@ -36,7 +36,7 @@ func newSession(ctx context.Context) *Session {
 // Stream is automatically stopped when both: the requested blocks are all fetched and 'in' chan is closed.
 // It might be also terminated with the provided context.
 // Block order is guaranteed to be the same as requested through the `in` chan.
-func (ses *Session) Stream(ctx context.Context, in <-chan []cid.Cid) <-chan blocks.Block {
+func (ses *Session) Stream(ctx context.Context, in <-chan []cid.Cid) (<-chan blocks.Block, <-chan error) {
 	ctx, cancel := context.WithCancel(ctx)
 	s := block.NewStream(ctx)
 	go func() {
@@ -62,7 +62,7 @@ func (ses *Session) Stream(ctx context.Context, in <-chan []cid.Cid) <-chan bloc
 		}
 	}()
 
-	return s.Output()
+	return s.Output(), ses.cherr
 }
 
 // Blocks fetches Blocks by their CIDs evenly from the remote providers in the session.
@@ -134,8 +134,4 @@ func (ses *Session) removeProvider() {
 
 func (ses *Session) requestId() uint32 {
 	return atomic.AddUint32(&ses.reqN, 1)
-}
-
-func (ses *Session) Err() <-chan error {
-	return ses.cherr
 }

@@ -57,7 +57,7 @@ func Walk(ctx context.Context, id cid.Cid, bs blockstream.BlockStreamer, handler
 	in <- []cid.Cid{id}
 	defer close(in)
 
-	out := bs.Stream(ctx, in)
+	out, cherr := bs.Stream(ctx, in)
 	for {
 		select {
 		case b, ok := <-out:
@@ -101,9 +101,13 @@ func Walk(ctx context.Context, id cid.Cid, bs blockstream.BlockStreamer, handler
 			case in <- ids:
 			case <-ctx.Done():
 				return ctx.Err()
+			case err := <-cherr:
+				return err
 			}
 		case <-ctx.Done():
 			return ctx.Err()
+		case err := <-cherr:
+			return err
 		}
 	}
 }

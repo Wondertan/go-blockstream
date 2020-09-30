@@ -83,7 +83,6 @@ func (bs *BlockStream) Close() error {
 // Autosave defines if received Blocks should be automatically put into Blockstore.
 func (bs *BlockStream) Session(ctx context.Context, token access.Token, autosave bool, peers ...peer.ID) (*Session, error) {
 	ses := newSession(ctx)
-	cherr := make(chan error)
 
 	for _, p := range peers {
 		s, err := bs.Host.NewStream(ctx, p, Protocol)
@@ -104,23 +103,16 @@ func (bs *BlockStream) Session(ctx context.Context, token access.Token, autosave
 			if err := f(); err != nil {
 				s.Reset()
 				ses.removeProvider()
-				cherr <- err
+
+				log.Error(err)
+				if ses.prvs == 0 {
+					log.Error("Closing session: ", ErrStreamsReset)
+					ses.cancel()
+					ses.cherr <- ErrStreamsReset
+				}
 			}
 		})
 	}
-
-	go func() {
-		select {
-		case err := <-cherr:
-			log.Error(err)
-
-			if ses.prvs == 0 {
-				log.Error("Closing session: ", ErrStreamsReset)
-				ses.cancel()
-				ses.cherr <- ErrStreamsReset
-			}
-		}
-	}()
 
 	return ses, nil
 }
