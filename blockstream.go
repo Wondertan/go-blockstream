@@ -2,6 +2,7 @@ package blockstream
 
 import (
 	"context"
+	"errors"
 	"sync"
 
 	"github.com/Wondertan/go-libp2p-access"
@@ -14,6 +15,8 @@ import (
 
 	"github.com/Wondertan/go-blockstream/block"
 )
+
+var ErrStreamsReset = errors.New("all streams reset")
 
 var log = logging.Logger("blockstream")
 
@@ -80,6 +83,8 @@ func (bs *BlockStream) Close() error {
 // Autosave defines if received Blocks should be automatically put into Blockstore.
 func (bs *BlockStream) Session(ctx context.Context, token access.Token, autosave bool, peers ...peer.ID) (*Session, error) {
 	ses := newSession(ctx)
+	cherr := make(chan error)
+
 	for _, p := range peers {
 		s, err := bs.Host.NewStream(ctx, p, Protocol)
 		if err != nil {
@@ -97,11 +102,25 @@ func (bs *BlockStream) Session(ctx context.Context, token access.Token, autosave
 			defer bs.wg.Done()
 
 			if err := f(); err != nil {
-				log.Error(err)
 				s.Reset()
+				ses.removeProvider()
+				cherr <- err
 			}
 		})
 	}
+
+	go func() {
+		select {
+		case err := <-cherr:
+			log.Error(err)
+
+			if ses.prvs == 0 {
+				log.Error("Closing session: ", ErrStreamsReset)
+				ses.cancel()
+				ses.cherr <- ErrStreamsReset
+			}
+		}
+	}()
 
 	return ses, nil
 }

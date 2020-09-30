@@ -16,14 +16,19 @@ const requestBufferSize = 8
 type Session struct {
 	reqN, prvs uint32
 
-	reqs chan *block.Request
-	ctx  context.Context
+	reqs   chan *block.Request
+	ctx    context.Context
+	cancel context.CancelFunc
+
+	cherr chan error
 }
 
 func newSession(ctx context.Context) *Session {
+	ctx, cancel := context.WithCancel(ctx)
 	return &Session{
-		reqs: make(chan *block.Request, requestBufferSize),
-		ctx:  ctx,
+		reqs:   make(chan *block.Request, requestBufferSize),
+		ctx:    ctx,
+		cancel: cancel,
 	}
 }
 
@@ -129,4 +134,8 @@ func (ses *Session) removeProvider() {
 
 func (ses *Session) requestId() uint32 {
 	return atomic.AddUint32(&ses.reqN, 1)
+}
+
+func (ses *Session) Err() <-chan error {
+	return ses.cherr
 }
