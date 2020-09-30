@@ -102,11 +102,13 @@ func Walk(ctx context.Context, id cid.Cid, bs blockstream.BlockStreamer, handler
 			case <-ctx.Done():
 				return ctx.Err()
 			case err := <-cherr:
+				cancel()
 				return err
 			}
 		case <-ctx.Done():
 			return ctx.Err()
 		case err := <-cherr:
+			cancel()
 			return err
 		}
 	}
