@@ -101,14 +101,14 @@ func (bs *BlockStream) Session(ctx context.Context, token access.Token, autosave
 			defer bs.wg.Done()
 
 			if err := f(); err != nil {
+				log.Error(err)
 				s.Reset()
 				ses.removeProvider()
 
-				log.Error(err)
-				if ses.prvs == 0 {
+				if ses.getProviders() == 0 {
 					log.Error("Closing session: ", ErrStreamsReset)
+					ses.err = ErrStreamsReset
 					ses.cancel()
-					ses.cherr <- ErrStreamsReset
 				}
 			}
 		})

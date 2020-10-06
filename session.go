@@ -20,7 +20,7 @@ type Session struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	cherr chan error
+	err error
 }
 
 func newSession(ctx context.Context) *Session {
@@ -39,6 +39,8 @@ func newSession(ctx context.Context) *Session {
 func (ses *Session) Stream(ctx context.Context, in <-chan []cid.Cid) (<-chan blocks.Block, <-chan error) {
 	ctx, cancel := context.WithCancel(ctx)
 	s := block.NewStream(ctx)
+
+	err := make(chan error)
 	go func() {
 		for {
 			select {
@@ -55,6 +57,7 @@ func (ses *Session) Stream(ctx context.Context, in <-chan []cid.Cid) (<-chan blo
 				s.Enqueue(reqs...)
 			case <-ses.ctx.Done():
 				cancel()
+				err <- ses.err
 				return
 			case <-ctx.Done():
 				return
@@ -62,7 +65,7 @@ func (ses *Session) Stream(ctx context.Context, in <-chan []cid.Cid) (<-chan blo
 		}
 	}()
 
-	return s.Output(), ses.cherr
+	return s.Output(), err
 }
 
 // Blocks fetches Blocks by their CIDs evenly from the remote providers in the session.
@@ -130,6 +133,10 @@ func (ses *Session) addProvider(rwc io.ReadWriteCloser, closing сlose) {
 
 func (ses *Session) removeProvider() {
 	atomic.AddUint32(&ses.prvs, ^uint32(0))
+}
+
+func (ses *Session) getProviders() uint32 {
+	return atomic.LoadUint32(&ses.prvs)
 }
 
 func (ses *Session) requestId() uint32 {
