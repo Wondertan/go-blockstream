@@ -41,6 +41,8 @@ func (ses *Session) Stream(ctx context.Context, in <-chan []cid.Cid) (<-chan blo
 	s := block.NewStream(ctx)
 
 	err := make(chan error)
+	defer close(err)
+
 	go func() {
 		for {
 			select {
@@ -57,7 +59,9 @@ func (ses *Session) Stream(ctx context.Context, in <-chan []cid.Cid) (<-chan blo
 				s.Enqueue(reqs...)
 			case <-ses.ctx.Done():
 				cancel()
-				err <- ses.err
+				if ses.err != nil {
+					err <- ses.err
+				}
 				return
 			case <-ctx.Done():
 				return
