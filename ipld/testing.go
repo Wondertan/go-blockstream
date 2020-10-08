@@ -93,8 +93,10 @@ type offlineStreamer struct {
 	streamed []cid.Cid
 }
 
-func (f *offlineStreamer) Stream(ctx context.Context, ids <-chan []cid.Cid) <-chan blocks.Block {
+func (f *offlineStreamer) Stream(ctx context.Context, ids <-chan []cid.Cid) (<-chan blocks.Block, <-chan error) {
 	out := make(chan blocks.Block, 500)
+	cherr := make(chan error)
+
 	go func() {
 		defer close(out)
 		for {
@@ -107,6 +109,7 @@ func (f *offlineStreamer) Stream(ctx context.Context, ids <-chan []cid.Cid) <-ch
 				for _, id := range ids {
 					b, err := f.getter(id)
 					if err != nil {
+						cherr <- err
 						return
 					}
 					f.streamed = append(f.streamed, id)
@@ -114,13 +117,16 @@ func (f *offlineStreamer) Stream(ctx context.Context, ids <-chan []cid.Cid) <-ch
 					select {
 					case out <- b:
 					case <-ctx.Done():
+						cherr <- ctx.Err()
 						return
 					}
 				}
 			case <-ctx.Done():
+				cherr <- ctx.Err()
 				return
 			}
 		}
 	}()
-	return out
+
+	return out, cherr
 }
