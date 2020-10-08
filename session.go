@@ -40,7 +40,7 @@ func (ses *Session) Stream(ctx context.Context, in <-chan []cid.Cid) (<-chan blo
 	ctx, cancel := context.WithCancel(ctx)
 	s := block.NewStream(ctx)
 
-	err := make(chan error)
+	err := make(chan error, 1)
 	defer close(err)
 
 	go func() {
