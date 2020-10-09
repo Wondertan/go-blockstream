@@ -95,10 +95,12 @@ type offlineStreamer struct {
 
 func (f *offlineStreamer) Stream(ctx context.Context, ids <-chan []cid.Cid) (<-chan blocks.Block, <-chan error) {
 	out := make(chan blocks.Block, 500)
-	cherr := make(chan error)
 
+	cherr := make(chan error, 1)
 	go func() {
 		defer close(out)
+		defer close(cherr)
+
 		for {
 			select {
 			case ids, ok := <-ids:

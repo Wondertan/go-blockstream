@@ -41,9 +41,9 @@ func (ses *Session) Stream(ctx context.Context, in <-chan []cid.Cid) (<-chan blo
 	s := block.NewStream(ctx)
 
 	err := make(chan error, 1)
-	defer close(err)
-
 	go func() {
+		defer close(err)
+
 		for {
 			select {
 			case ids, ok := <-in:
