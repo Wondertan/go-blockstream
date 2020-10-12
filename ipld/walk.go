@@ -71,9 +71,19 @@ func Walk(ctx context.Context, id cid.Cid, bs blockstream.BlockStreamer, handler
 				return err
 			}
 
-			err = wo.handle(nd)
-			if err != nil {
-				return err
+			shouldHandle := true
+			if nd.Cid().Type() != cid.Raw {
+				shouldHandle, err = wo.visit(nd.Cid())
+				if err != nil {
+					return err
+				}
+			}
+
+			if shouldHandle {
+				err = wo.handle(nd)
+				if err != nil {
+					return err
+				}
 			}
 
 			ids := make([]cid.Cid, 0, len(nd.Links()))
