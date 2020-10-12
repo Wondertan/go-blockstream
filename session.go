@@ -16,14 +16,19 @@ const requestBufferSize = 8
 type Session struct {
 	reqN, prvs uint32
 
-	reqs chan *block.Request
-	ctx  context.Context
+	reqs   chan *block.Request
+	ctx    context.Context
+	cancel context.CancelFunc
+
+	err error
 }
 
 func newSession(ctx context.Context) *Session {
+	ctx, cancel := context.WithCancel(ctx)
 	return &Session{
-		reqs: make(chan *block.Request, requestBufferSize),
-		ctx:  ctx,
+		reqs:   make(chan *block.Request, requestBufferSize),
+		ctx:    ctx,
+		cancel: cancel,
 	}
 }
 
@@ -31,10 +36,14 @@ func newSession(ctx context.Context) *Session {
 // Stream is automatically stopped when both: the requested blocks are all fetched and 'in' chan is closed.
 // It might be also terminated with the provided context.
 // Block order is guaranteed to be the same as requested through the `in` chan.
-func (ses *Session) Stream(ctx context.Context, in <-chan []cid.Cid) <-chan blocks.Block {
+func (ses *Session) Stream(ctx context.Context, in <-chan []cid.Cid) (<-chan blocks.Block, <-chan error) {
 	ctx, cancel := context.WithCancel(ctx)
 	s := block.NewStream(ctx)
+
+	err := make(chan error, 1)
 	go func() {
+		defer close(err)
+
 		for {
 			select {
 			case ids, ok := <-in:
@@ -50,6 +59,9 @@ func (ses *Session) Stream(ctx context.Context, in <-chan []cid.Cid) <-chan bloc
 				s.Enqueue(reqs...)
 			case <-ses.ctx.Done():
 				cancel()
+				if ses.err != nil {
+					err <- ses.err
+				}
 				return
 			case <-ctx.Done():
 				return
@@ -57,7 +69,7 @@ func (ses *Session) Stream(ctx context.Context, in <-chan []cid.Cid) <-chan bloc
 		}
 	}()
 
-	return s.Output()
+	return s.Output(), err
 }
 
 // Blocks fetches Blocks by their CIDs evenly from the remote providers in the session.
@@ -125,6 +137,10 @@ func (ses *Session) addProvider(rwc io.ReadWriteCloser, closing сlose) {
 
 func (ses *Session) removeProvider() {
 	atomic.AddUint32(&ses.prvs, ^uint32(0))
+}
+
+func (ses *Session) getProviders() uint32 {
+	return atomic.LoadUint32(&ses.prvs)
 }
 
 func (ses *Session) requestId() uint32 {

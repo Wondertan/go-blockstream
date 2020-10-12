@@ -8,5 +8,5 @@ import (
 )
 
 type BlockStreamer interface {
-	Stream(context.Context, <-chan []cid.Cid) <-chan blocks.Block
+	Stream(context.Context, <-chan []cid.Cid) (<-chan blocks.Block, <-chan error)
 }
