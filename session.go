@@ -32,7 +32,7 @@ func newSession(ctx context.Context) *Session {
 	}
 }
 
-// Stream starts direct BBlock fetching from remote providers. It fetches the Blocks requested with 'in' chan by their ids.
+// Stream starts direct Block fetching from remote providers. It fetches the Blocks requested with 'in' chan by their ids.
 // Stream is automatically stopped when both: the requested blocks are all fetched and 'in' chan is closed.
 // It might be also terminated with the provided context.
 // Block order is guaranteed to be the same as requested through the `in` chan.

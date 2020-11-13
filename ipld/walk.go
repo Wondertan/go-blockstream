@@ -2,8 +2,6 @@ package ipld
 
 import (
 	"context"
-	"errors"
-
 	"github.com/ipfs/go-cid"
 	format "github.com/ipfs/go-ipld-format"
 
@@ -57,13 +55,10 @@ func Walk(ctx context.Context, id cid.Cid, bs blockstream.BlockStreamer, handler
 	in <- []cid.Cid{id}
 	defer close(in)
 
-	out, cherr := bs.Stream(ctx, in)
+	out, errCh := bs.Stream(ctx, in)
 	for {
 		select {
-		case b, ok := <-out:
-			if !ok {
-				return errors.New("stream channel closed")
-			}
+		case b := <-out:
 			remains--
 
 			nd, err := format.Decode(b)
@@ -71,35 +66,22 @@ func Walk(ctx context.Context, id cid.Cid, bs blockstream.BlockStreamer, handler
 				return err
 			}
 
-			shouldHandle := true
-			if nd.Cid().Type() != cid.Raw {
-				shouldHandle, err = wo.visit(nd.Cid())
-				if err != nil {
-					return err
-				}
-			}
-
-			if shouldHandle {
-				err = wo.handle(nd)
-				if err != nil {
-					return err
-				}
+			err = wo.handle(nd)
+			if err != nil {
+				return err
 			}
 
 			ids := make([]cid.Cid, 0, len(nd.Links()))
 			for _, l := range nd.Links() {
-				if l.Cid.Type() != cid.Raw {
-					ids = append(ids, l.Cid)
-					continue
-				}
-
 				v, err := wo.visit(l.Cid)
 				if err != nil {
 					return err
 				}
-				if v {
-					ids = append(ids, l.Cid)
+				if !v {
+					continue
 				}
+
+				ids = append(ids, l.Cid)
 			}
 
 			if len(ids) == 0 {
@@ -114,15 +96,11 @@ func Walk(ctx context.Context, id cid.Cid, bs blockstream.BlockStreamer, handler
 			case in <- ids:
 			case <-ctx.Done():
 				return ctx.Err()
-			case err := <-cherr:
-				cancel()
-				return err
 			}
+		case err := <-errCh:
+			return err
 		case <-ctx.Done():
 			return ctx.Err()
-		case err := <-cherr:
-			cancel()
-			return err
 		}
 	}
 }
