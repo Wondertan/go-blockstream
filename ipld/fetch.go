@@ -2,6 +2,7 @@ package ipld
 
 import (
 	"context"
+	blocks "github.com/ipfs/go-block-format"
 
 	"github.com/ipfs/go-cid"
 	blockstore "github.com/ipfs/go-ipfs-blockstore"
@@ -12,18 +13,43 @@ import (
 
 // FetchDAG traverses and fetches whole IPLD graph from the stream.
 func FetchDAG(ctx context.Context, id cid.Cid, ses blockstream.BlockStreamer, dag format.NodeAdder) error {
-	return Walk(ctx, id, ses, func(node format.Node) error {
-		return dag.Add(ctx, node)
+	return blockstream.Explore(ctx, id, ses, func(b blocks.Block) ([]cid.Cid, error) {
+		nd, err := format.Decode(b)
+		if err != nil {
+			return nil, err
+		}
+
+		ids := make([]cid.Cid, len(nd.Links()))
+		for i, l := range nd.Links() {
+			ids[i] = l.Cid
+		}
+
+		return ids, dag.Add(ctx, nd)
 	})
 }
 
 // FetchAbsent traverses the IPLD graph and fetches nodes that are not in the Blockstore.
 // TODO Blockstore is used because DAGService does not have a Has method.
 func FetchAbsent(ctx context.Context, id cid.Cid, ses blockstream.BlockStreamer, bs blockstore.Blockstore) error {
-	return Walk(ctx, id, ses, func(node format.Node) error {
-		return bs.Put(node)
-	}, Visit(func(id cid.Cid) (bool, error) {
-		has, err := bs.Has(id)
-		return !has, err
-	}))
+	return blockstream.Explore(ctx, id, ses, func(b blocks.Block) ([]cid.Cid, error) {
+		nd, err := format.Decode(b)
+		if err != nil {
+			return nil, err
+		}
+
+		ids := make([]cid.Cid, 0, len(nd.Links()))
+		for _, l := range nd.Links() {
+			ok, err := bs.Has(l.Cid)
+			if err != nil {
+				return nil, err
+			}
+
+			if !ok {
+				ids = append(ids, l.Cid)
+			}
+
+		}
+
+		return ids, bs.Put(nd)
+	})
 }
