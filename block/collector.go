@@ -34,6 +34,7 @@ func (c *Collector) collect() {
 			for {
 				bs, err := c.getBlocks(req.Remains())
 				if err != nil {
+					log.Errorf("Failed to collect blocks for request(%d): %s", req.Id(), err)
 					req.Fill(bs)
 					req.Error(err)
 					break

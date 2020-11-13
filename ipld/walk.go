@@ -58,7 +58,12 @@ func Walk(ctx context.Context, id cid.Cid, bs blockstream.BlockStreamer, handler
 	out, errCh := bs.Stream(ctx, in)
 	for {
 		select {
-		case b := <-out:
+		case b, ok := <-out:
+			if !ok {
+				out = nil
+				continue
+			}
+
 			remains--
 
 			nd, err := format.Decode(b)
@@ -94,6 +99,8 @@ func Walk(ctx context.Context, id cid.Cid, bs blockstream.BlockStreamer, handler
 
 			select {
 			case in <- ids:
+			case err := <-errCh:
+				return err
 			case <-ctx.Done():
 				return ctx.Err()
 			}
