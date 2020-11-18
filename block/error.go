@@ -1,19 +1,19 @@
-package blockstream
+package block
 
 import (
 	"fmt"
 	"github.com/ipfs/go-cid"
 )
 
-type BlockError struct {
+type Error struct {
 	Cid cid.Cid
 	Err error
 }
 
-func (br *BlockError) Error() string {
+func (br *Error) Error() string {
 	return fmt.Sprintf("blockstream: failed to process block %s: %s", br.Cid, br.Err)
 }
 
-func (br *BlockError) Unwrap() error {
+func (br *Error) Unwrap() error {
 	return br.Err
 }

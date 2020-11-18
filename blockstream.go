@@ -16,7 +16,7 @@ import (
 	"github.com/Wondertan/go-blockstream/block"
 )
 
-var ErrStreamsReset = errors.New("all streams reset")
+var ErrNoProviders = errors.New("blockstream: no providers")
 
 var log = logging.Logger("blockstream")
 
@@ -78,10 +78,13 @@ func (bs *BlockStream) Close() error {
 	return nil
 }
 
-// TODO No Token test
 // Session starts new BlockStream session between current node and providing 'peers'.
 func (bs *BlockStream) Session(ctx context.Context, peers []peer.ID, opts ...SessionOption) (*Session, error) {
-	tkn, _ := access.GetToken(ctx)
+	tkn, err := access.GetToken(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	ses := newSession(ctx, opts...)
 	for _, p := range peers {
 		s, err := bs.Host.NewStream(ctx, p, Protocol)
@@ -95,20 +98,23 @@ func (bs *BlockStream) Session(ctx context.Context, peers []peer.ID, opts ...Ses
 			return nil, err
 		}
 
+		var once sync.Once
 		ses.addProvider(s, func(f func() error) {
 			bs.wg.Add(1)
 			defer bs.wg.Done()
 
 			if err := f(); err != nil {
-				log.Error(err)
-				s.Reset()
-				ses.removeProvider()
+				once.Do(func() {
+					s.Reset()
+					log.Errorf("Failed provider %s for session %s: %s", p.Pretty(), tkn, err)
 
-				if ses.getProviders() == 0 {
-					log.Error("Closing session: ", ErrStreamsReset)
-					ses.err = ErrStreamsReset
-					ses.cancel()
-				}
+					if ses.removeProvider() == 0 {
+						log.Errorf("Terminating session %s: %s", err)
+
+						ses.err = ErrNoProviders
+						ses.cancel()
+					}
+				})
 			}
 		})
 	}

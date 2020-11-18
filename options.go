@@ -4,7 +4,7 @@ import (
 	blockstore "github.com/ipfs/go-ipfs-blockstore"
 )
 
-func Store(bs blockstore.Blockstore) SessionOption {
+func Blockstore(bs blockstore.Blockstore) SessionOption {
 	return func(opts *sessionOpts) {
 		opts.bs = bs
 	}

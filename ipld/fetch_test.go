@@ -44,7 +44,8 @@ func TestFetchAbsent(t *testing.T) {
 		rsize = nsize * 256
 	)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx := access.WithToken(context.Background(), "test")
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	fillstore := blockstore.NewBlockstore(sync.MutexWrap(datastore.NewMapDatastore()))

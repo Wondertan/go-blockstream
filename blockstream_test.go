@@ -31,7 +31,7 @@ func TestBlockStream(t *testing.T) {
 	bs, cids := test.RandBlockstore(t, rand.Reader, blocksCount, size)
 
 	net, err := mocknet.FullMeshConnected(ctx, nodesCount)
-	require.Nil(t, err, err)
+	require.NoError(t, err, err)
 	hs := net.Hosts()
 
 	nodes := make([]*BlockStream, nodesCount)
@@ -75,8 +75,7 @@ func TestBlockStream(t *testing.T) {
 
 	chans := make([]<-chan blocks.Block, nodesCount)
 	for i, s := range sessions {
-		chans[i], err = s.Blocks(ctx, cids)
-		require.Nil(t, err, err)
+		chans[i], _ = s.Blocks(ctx, cids)
 	}
 
 	for _, ch := range chans {
@@ -92,6 +91,6 @@ func TestBlockStream(t *testing.T) {
 
 	for _, n := range nodes {
 		err = n.Close()
-		require.Nil(t, err, err)
+		require.NoError(t, err, err)
 	}
 }
