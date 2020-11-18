@@ -2,6 +2,7 @@ package blockstream
 
 import (
 	"context"
+	blockstore "github.com/ipfs/go-ipfs-blockstore"
 	"io"
 	"sync/atomic"
 
@@ -13,23 +14,27 @@ import (
 
 const requestBufferSize = 8
 
+// TODO Return BlockErrors
 type Session struct {
-	reqN, prvs uint32
-
-	reqs   chan *block.Request
 	ctx    context.Context
 	cancel context.CancelFunc
 
+	reqN, prvs uint32
+	reqs   chan *block.Request
 	err error
+
+	sessionOpts
 }
 
-func newSession(ctx context.Context) *Session {
+func newSession(ctx context.Context, opts ...SessionOption) *Session {
 	ctx, cancel := context.WithCancel(ctx)
-	return &Session{
+	ses := &Session{
 		reqs:   make(chan *block.Request, requestBufferSize),
 		ctx:    ctx,
 		cancel: cancel,
 	}
+	ses.parse(opts...)
+	return ses
 }
 
 // Stream starts direct Block fetching from remote providers. It fetches the Blocks requested with 'in' chan by their ids.
@@ -145,4 +150,12 @@ func (ses *Session) getProviders() uint32 {
 
 func (ses *Session) requestId() uint32 {
 	return atomic.AddUint32(&ses.reqN, 1)
+}
+
+func (ses *Session) store() blockstore.Blockstore {
+	if !ses.save {
+		return nil
+	}
+
+	return ses.bs
 }

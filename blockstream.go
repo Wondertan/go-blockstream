@@ -22,7 +22,7 @@ var log = logging.Logger("blockstream")
 
 const Protocol protocol.ID = "/blockstream/1.0.0"
 
-const collectorsDefault = 8
+const collectorsDefault = 32
 
 type BlockStream struct {
 	ctx context.Context
@@ -78,19 +78,18 @@ func (bs *BlockStream) Close() error {
 	return nil
 }
 
-// TODO Define opts.
-// Session starts new BlockStream session between current node and providing 'peers' within the `token` namespace.
-// Autosave defines if received Blocks should be automatically put into Blockstore.
-func (bs *BlockStream) Session(ctx context.Context, token access.Token, autosave bool, peers ...peer.ID) (*Session, error) {
-	ses := newSession(ctx)
-
+// TODO No Token test
+// Session starts new BlockStream session between current node and providing 'peers'.
+func (bs *BlockStream) Session(ctx context.Context, peers []peer.ID, opts ...SessionOption) (*Session, error) {
+	tkn, _ := access.GetToken(ctx)
+	ses := newSession(ctx, opts...)
 	for _, p := range peers {
 		s, err := bs.Host.NewStream(ctx, p, Protocol)
 		if err != nil {
 			return nil, err
 		}
 
-		err = giveHand(s, token)
+		err = giveHand(s, tkn)
 		if err != nil {
 			s.Reset()
 			return nil, err

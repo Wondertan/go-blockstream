@@ -12,12 +12,12 @@ type Explorer func(blocks.Block) ([]cid.Cid, error)
 
 // Explore gets first blocks from stream, passes it to handler that may explore new key in block and handles them over
 // until no more left.
-func Explore(ctx context.Context, id cid.Cid, bs BlockStreamer, h Explorer) error {
+func Explore(ctx context.Context, id cid.Cid, bs Streamer, h Explorer) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	remains := 1
-	in := make(chan []cid.Cid, 16)
+	in := make(chan []cid.Cid, 8)
 	in <- []cid.Cid{id}
 	defer close(in)
 

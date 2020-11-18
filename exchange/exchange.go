@@ -49,12 +49,7 @@ func (e *exchange) NewSession(ctx context.Context) iexchange.Fetcher {
 		return &fetcher{err: err}
 	}
 
-	tkn, err := GetToken(ctx)
-	if err != nil {
-		return &fetcher{err: err}
-	}
-
-	ses, err := (*blockstream.BlockStream)(e).Session(ctx, tkn, true, prvs...)
+	ses, err := (*blockstream.BlockStream)(e).Session(ctx, prvs)
 	return &fetcher{ses: ses, err: err}
 }
 

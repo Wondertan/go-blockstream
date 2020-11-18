@@ -3,6 +3,7 @@ package ipld
 import (
 	"context"
 	"crypto/rand"
+	"github.com/libp2p/go-libp2p-core/peer"
 	"io"
 	"testing"
 
@@ -85,7 +86,7 @@ func TestFetchAbsent(t *testing.T) {
 	root.AddNodeLink("3", n3)
 	fillstore.Put(root)
 
-	ses, err := l.Session(ctx, "", false, r.Host.ID())
+	ses, err := l.Session(ctx, []peer.ID{r.Host.ID()})
 	require.Nil(t, err, err)
 
 	err = FetchAbsent(ctx, root.Cid(), ses, halfstore)

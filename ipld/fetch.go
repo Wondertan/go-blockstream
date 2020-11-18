@@ -12,7 +12,7 @@ import (
 )
 
 // FetchDAG traverses and fetches whole IPLD graph from the stream.
-func FetchDAG(ctx context.Context, id cid.Cid, ses blockstream.BlockStreamer, dag format.NodeAdder) error {
+func FetchDAG(ctx context.Context, id cid.Cid, ses blockstream.Streamer, dag format.NodeAdder) error {
 	return blockstream.Explore(ctx, id, ses, func(b blocks.Block) ([]cid.Cid, error) {
 		nd, err := format.Decode(b)
 		if err != nil {
@@ -30,7 +30,7 @@ func FetchDAG(ctx context.Context, id cid.Cid, ses blockstream.BlockStreamer, da
 
 // FetchAbsent traverses the IPLD graph and fetches nodes that are not in the Blockstore.
 // TODO Blockstore is used because DAGService does not have a Has method.
-func FetchAbsent(ctx context.Context, id cid.Cid, ses blockstream.BlockStreamer, bs blockstore.Blockstore) error {
+func FetchAbsent(ctx context.Context, id cid.Cid, ses blockstream.Streamer, bs blockstore.Blockstore) error {
 	return blockstream.Explore(ctx, id, ses, func(b blocks.Block) ([]cid.Cid, error) {
 		nd, err := format.Decode(b)
 		if err != nil {

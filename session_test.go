@@ -17,10 +17,15 @@ import (
 )
 
 func TestRequestResponder(t *testing.T) {
+	const (
+		count   = 8
+		size    = 256
+	)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	bs, ids := test.RandBlocks(t, rand.Reader, 8, 256)
+	bs, ids := test.RandBlocks(t, rand.Reader, count, size)
 
 	in, out := make(chan *block.Request, 4), make(chan *block.Request, 4)
 	newRequestPair(ctx, in, out)
@@ -138,6 +143,33 @@ func TestSessionNotFound(t *testing.T) {
 
 	_, ok := <-ch
 	assert.False(t, ok)
+}
+
+func TestSessionSave(t *testing.T) {
+	const (
+		count   = 512
+		size    = 64
+		msgSize = 256
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	empty := test.EmptyBlockstore()
+	bstore, ids := test.RandBlockstore(t, rand.Reader, count, size)
+
+	ses := newSession(ctx, Store(empty), Save(true))
+	addProvider(ctx, ses, bstore, msgSize)
+
+	ch, err := ses.Blocks(ctx, ids)
+	require.NoError(t, err, err)
+
+	assertChan(t, ch, ids, count)
+	for _, id := range ids {
+		ok, err := empty.Has(id)
+		require.NoError(t, err, err)
+		assert.True(t, ok, "Some block is missing")
+	}
 }
 
 func addProvider(ctx context.Context, ses *Session, bstore blockstore.Blockstore, msgSize int) {

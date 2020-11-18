@@ -24,7 +24,8 @@ func TestBlockStream(t *testing.T) {
 		tkn         = access.Token("test")
 	)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx := access.WithToken(context.Background(), tkn)
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	bs, cids := test.RandBlockstore(t, rand.Reader, blocksCount, size)
@@ -60,7 +61,7 @@ func TestBlockStream(t *testing.T) {
 			defer wg.Done()
 
 			var er error
-			sessions[i], er = n.Session(ctx, tkn, false, peers...)
+			sessions[i], er = n.Session(ctx, peers)
 			if er != nil {
 				once.Do(func() {
 					err = er
