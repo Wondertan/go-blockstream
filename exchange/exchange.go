@@ -67,7 +67,7 @@ func (f *fetcher) GetBlocks(ctx context.Context, ids []cid.Cid) (<-chan blocks.B
 
 	outB := make(chan blocks.Block)
 	go func() {
-		close(outB)
+		defer close(outB)
 		resCh, errCh := f.ses.Blocks(ctx, ids)
 		for res := range resCh {
 			if res.Block == nil {
