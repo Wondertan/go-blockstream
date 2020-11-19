@@ -13,9 +13,9 @@ var log = logging.Logger("blockstream")
 const outputSize = 32
 
 type Stream struct {
-	ctx   context.Context
-	queue *RequestQueue
-	out   chan Result
+	ctx         context.Context
+	queue       *RequestQueue
+	out         chan Result
 	done, close chan struct{}
 }
 
@@ -25,14 +25,14 @@ func NewStream(ctx context.Context) *Stream {
 		ctx:   ctx,
 		queue: NewRequestQueue(cls),
 		out:   make(chan Result, outputSize),
-		done: done,
+		done:  done,
 		close: cls,
 	}
 	go s.stream()
 	return s
 }
 
-func (s *Stream) Done() <-chan struct{}{
+func (s *Stream) Done() <-chan struct{} {
 	return s.done
 }
 

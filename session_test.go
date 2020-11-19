@@ -17,8 +17,8 @@ import (
 
 func TestRequestResponder(t *testing.T) {
 	const (
-		count   = 8
-		size    = 256
+		count = 8
+		size  = 256
 	)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -76,7 +76,7 @@ func TestSessionStream(t *testing.T) {
 
 	res, err := ses.Stream(ctx, in)
 	for i := 0; i < times; i++ {
-		for _, id := range ids[i*count/times:(i+1)*count/times] {
+		for _, id := range ids[i*count/times : (i+1)*count/times] {
 			res, ok := <-res
 			require.True(t, ok)
 			assert.Equal(t, id, res.Cid)

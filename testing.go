@@ -12,7 +12,6 @@ import (
 	"github.com/Wondertan/go-blockstream/block"
 )
 
-
 func assertBlockReq(t *testing.T, r io.Reader, in uint32, ids []cid.Cid) {
 	id, out, err := readBlocksReq(r)
 	require.Nil(t, err, err)

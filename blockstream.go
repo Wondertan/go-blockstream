@@ -86,6 +86,10 @@ func (bs *BlockStream) Session(ctx context.Context, peers []peer.ID, opts ...Ses
 	}
 
 	ses := newSession(ctx, opts...)
+	if ses.offline {
+		return ses, nil
+	}
+
 	for _, p := range peers {
 		s, err := bs.Host.NewStream(ctx, p, Protocol)
 		if err != nil {

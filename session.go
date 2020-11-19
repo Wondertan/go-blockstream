@@ -13,7 +13,7 @@ import (
 
 const (
 	maxAvailableWorkers = 128
-	requestBufferSize = 8
+	requestBufferSize   = 8
 )
 
 // TODO Refactor this, my ayes hurt watching this
@@ -22,10 +22,10 @@ type Session struct {
 	cancel context.CancelFunc
 
 	reqN, prvs uint32
-	reqs   chan *block.Request
-	err error
+	reqs       chan *block.Request
+	err        error
 
-	jobs chan *blockJob
+	jobs    chan *blockJob
 	workers uint32
 
 	sessionOpts
@@ -37,7 +37,7 @@ func newSession(ctx context.Context, opts ...SessionOption) *Session {
 		reqs:   make(chan *block.Request, requestBufferSize),
 		ctx:    ctx,
 		cancel: cancel,
-		jobs: make(chan *blockJob),
+		jobs:   make(chan *blockJob),
 	}
 	ses.parse(opts...)
 	return ses
@@ -297,13 +297,12 @@ func (ses *Session) worker() {
 				}
 			}
 
-			if fetch {
+			if fetch && !ses.offline {
 
 				// FIXME Work with requests directly
 				s := block.NewStream(j.ctx)
 				s.Enqueue(ses.request(j.ctx, toFetch)...)
 				s.Close()
-
 
 				fetched = make([]blocks.Block, 0, len(toFetch))
 				for i, id := range toFetch {
