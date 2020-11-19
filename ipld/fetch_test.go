@@ -38,7 +38,7 @@ func TestFetchAbsent(t *testing.T) {
 	l := blockstream.NewBlockStream(ctx, hs[1], halfstore, access.NewPassingGranter())
 
 	lv1 := dagFromReader(t, io.LimitReader(rand.Reader, rsize), &fakeAdder{fillstore}, nsize)
-	// copyBlockstore(t, ctx, fillstore, halfstore)
+	copyBlockstore(t, ctx, fillstore, halfstore)
 	lv2 := dagFromReader(t, io.LimitReader(rand.Reader, rsize), &fakeAdder{fillstore}, nsize)
 	lv3 := dagFromReader(t, io.LimitReader(rand.Reader, rsize), &fakeAdder{fillstore}, nsize)
 
@@ -48,11 +48,27 @@ func TestFetchAbsent(t *testing.T) {
 	n1.AddNodeLink("3", lv3)
 	fillstore.Put(n1)
 
+	nn1 := merkledag.NodeWithData([]byte{1})
+	nn1.AddNodeLink("al", n1)
+	fillstore.Put(nn1)
+
+	nnn1 := merkledag.NodeWithData([]byte{1})
+	nnn1.AddNodeLink("al", nn1)
+	fillstore.Put(nnn1)
+
+	nnnn1 := merkledag.NodeWithData([]byte{1})
+	nnnn1.AddNodeLink("al", nnn1)
+	fillstore.Put(nnnn1)
+
 	n2 := merkledag.NodeWithData([]byte{2})
 	n2.AddNodeLink("1", lv2)
 	n2.AddNodeLink("2", lv2)
 	n2.AddNodeLink("3", lv3)
 	fillstore.Put(n2)
+
+	nn2 := merkledag.NodeWithData([]byte{1})
+	nn2.AddNodeLink("al", n2)
+	fillstore.Put(nn2)
 
 	n3 := merkledag.NodeWithData([]byte{3})
 	n3.AddNodeLink("1", lv3)
@@ -60,10 +76,14 @@ func TestFetchAbsent(t *testing.T) {
 	n3.AddNodeLink("3", lv3)
 	fillstore.Put(n3)
 
+	nn3 := merkledag.NodeWithData([]byte{1})
+	nn3.AddNodeLink("al", n3)
+	fillstore.Put(nn3)
+
 	root := merkledag.NodeWithData(nil)
-	root.AddNodeLink("1", n1)
-	root.AddNodeLink("2", n2)
-	root.AddNodeLink("3", n3)
+	root.AddNodeLink("1", nnnn1)
+	root.AddNodeLink("2", nn2)
+	root.AddNodeLink("3", nn3)
 	fillstore.Put(root)
 
 	ses, err := l.Session(ctx, []peer.ID{r.Host.ID()}, blockstream.Blockstore(halfstore), blockstream.Save(true))

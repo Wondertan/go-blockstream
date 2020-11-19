@@ -25,8 +25,9 @@ type Session struct {
 	reqs       chan *block.Request
 	err        error
 
-	jobs    chan *blockJob
-	workers uint32
+	jobch   chan *blockJob
+
+	workers, jobs uint32
 
 	sessionOpts
 }
@@ -37,7 +38,7 @@ func newSession(ctx context.Context, opts ...SessionOption) *Session {
 		reqs:   make(chan *block.Request, requestBufferSize),
 		ctx:    ctx,
 		cancel: cancel,
-		jobs:   make(chan *blockJob),
+		jobch:  make(chan *blockJob),
 	}
 	ses.parse(opts...)
 	return ses
@@ -197,13 +198,7 @@ func (ses *Session) streamWithStore(ctx context.Context, in <-chan []cid.Cid) (<
 					return
 				}
 
-				for _, res := range j.results {
-					select {
-					case outR <- *res:
-					case <-j.ctx.Done():
-					}
-				}
-
+				j.write(outR)
 				first = j.next
 			case <-ses.ctx.Done():
 				if ses.err != nil {
@@ -239,12 +234,7 @@ func (ses *Session) blocksWithStore(ctx context.Context, ids []cid.Cid) (<-chan 
 
 		select {
 		case j := <-done:
-			for _, res := range j.results {
-				select {
-				case outR <- *res:
-				case <-j.ctx.Done():
-				}
-			}
+			j.write(outR)
 		case <-ses.ctx.Done():
 			if ses.err != nil {
 				select {
@@ -262,14 +252,14 @@ func (ses *Session) blocksWithStore(ctx context.Context, ids []cid.Cid) (<-chan 
 
 func (ses *Session) process(ctx context.Context, ids []cid.Cid, done chan *blockJob) chan *blockJob {
 	last := make(chan *blockJob, 1)
-	j := newJob(ctx, ids, done, last)
+	j := ses.newJob(ctx, ids, done, last)
 	select {
-	case ses.jobs <- j:
+	case ses.jobch <- j:
 	case <-ses.ctx.Done():
 	default:
 		ses.spawnWorker()
 		select {
-		case ses.jobs <- j:
+		case ses.jobch <- j:
 		case <-ses.ctx.Done():
 		}
 	}
@@ -278,17 +268,21 @@ func (ses *Session) process(ctx context.Context, ids []cid.Cid, done chan *block
 }
 
 func (ses *Session) spawnWorker() {
-	if atomic.AddUint32(&ses.workers, 1) >= maxAvailableWorkers {
+	id := atomic.AddUint32(&ses.workers, 1)
+	if id >= maxAvailableWorkers {
 		return
 	}
 
-	go ses.worker()
+	log.Debugf("New Worker %d spawned.", id)
+	go ses.worker(id)
 }
 
-func (ses *Session) worker() {
+func (ses *Session) worker(id uint32) {
 	for {
 		select {
-		case j := <-ses.jobs:
+		case j := <-ses.jobch:
+			log.Debugf("Worker %d started processing Job %d.", id, j.id)
+
 			var fetch bool
 			var fetched []blocks.Block
 			var toFetch = make([]cid.Cid, len(j.results))
@@ -304,6 +298,7 @@ func (ses *Session) worker() {
 			}
 
 			if fetch && !ses.offline {
+				log.Debugf("Fetching for Job %d started", j.id)
 
 				// FIXME Work with requests directly
 				s := block.NewStream(j.ctx)
@@ -326,6 +321,8 @@ func (ses *Session) worker() {
 						j.results[i].Error = j.ctx.Err()
 					}
 				}
+
+				log.Debugf("Fetching for Job %d finished", j.id)
 			}
 
 			select {
@@ -345,21 +342,37 @@ func (ses *Session) worker() {
 }
 
 type blockJob struct {
+	id uint32
 	ctx        context.Context
 	results    []*block.Result
 	next, done chan *blockJob
 }
 
-func newJob(ctx context.Context, ids []cid.Cid, done, next chan *blockJob) *blockJob {
+func (ses *Session) newJob(ctx context.Context, ids []cid.Cid, done, next chan *blockJob) *blockJob {
 	results := make([]*block.Result, len(ids))
 	for i, id := range ids {
 		results[i] = &block.Result{Cid: id}
 	}
 
-	return &blockJob{
+	j := &blockJob{
+		id: atomic.AddUint32(&ses.jobs, 1),
 		ctx:     ctx,
 		results: results,
 		done:    done,
 		next:    next,
 	}
+
+	log.Debugf("Got new Job %d.", j.id)
+	return j
+}
+
+func (j *blockJob) write(outR chan block.Result) {
+	for _, res := range j.results {
+		select {
+		case outR <- *res:
+		case <-j.ctx.Done():
+		}
+	}
+
+	log.Debugf("Job %d was processed.", j.id)
 }
