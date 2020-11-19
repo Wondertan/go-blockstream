@@ -176,6 +176,9 @@ func (ses *Session) streamWithStore(ctx context.Context, in <-chan []cid.Cid) (<
 		defer close(outR)
 		defer close(outErr)
 
+		ctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+
 		first := make(chan *blockJob, 1)
 		last := first
 
@@ -227,6 +230,9 @@ func (ses *Session) blocksWithStore(ctx context.Context, ids []cid.Cid) (<-chan 
 	go func() {
 		defer close(outR)
 		defer close(outErr)
+
+		ctx, cancel := context.WithCancel(ctx)
+		defer cancel()
 
 		done := make(chan *blockJob, 1)
 		ses.process(ctx, ids, done)
