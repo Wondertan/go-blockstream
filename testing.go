@@ -5,7 +5,6 @@ import (
 	"io"
 	"testing"
 
-	"github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -13,15 +12,6 @@ import (
 	"github.com/Wondertan/go-blockstream/block"
 )
 
-func assertChan(t *testing.T, ch <-chan blocks.Block, ids []cid.Cid, expected int) {
-	var actual int
-	for _, id := range ids {
-		b := <-ch
-		assert.Equal(t, id, b.Cid())
-		actual++
-	}
-	assert.Equal(t, expected, actual)
-}
 
 func assertBlockReq(t *testing.T, r io.Reader, in uint32, ids []cid.Cid) {
 	id, out, err := readBlocksReq(r)

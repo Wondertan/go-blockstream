@@ -123,9 +123,10 @@ func (bs *BlockStream) Session(ctx context.Context, peers []peer.ID, opts ...Ses
 }
 
 func (bs *BlockStream) handler(s network.Stream) error {
+	p := s.Conn().RemotePeer()
 	var done chan<- error
 	_, err := takeHand(s, func(t access.Token) (err error) {
-		done, err = bs.Granter.Granted(t, s.Conn().RemotePeer())
+		done, err = bs.Granter.Granted(t, p)
 		return
 	})
 	if err != nil {
@@ -140,7 +141,7 @@ func (bs *BlockStream) handler(s network.Stream) error {
 
 			err := f()
 			if err != nil {
-				log.Error(err)
+				log.Errorf("Failed to respond to peer %s: %s", p.Pretty(), err)
 			}
 
 			once.Do(func() {

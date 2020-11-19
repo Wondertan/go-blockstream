@@ -2,7 +2,6 @@ package blockstream
 
 import (
 	"context"
-	blockstore "github.com/ipfs/go-ipfs-blockstore"
 	"io"
 	"sync/atomic"
 
@@ -48,49 +47,44 @@ func newSession(ctx context.Context, opts ...SessionOption) *Session {
 // Stream is automatically stopped when both: the requested blocks are all fetched and 'in' chan is closed.
 // It might be also terminated with the provided context.
 // Block order is guaranteed to be the same as requested through the `in` chan.
-func (ses *Session) Stream(ctx context.Context, in <-chan []cid.Cid) (<-chan blocks.Block, <-chan error) {
+func (ses *Session) Stream(ctx context.Context, in <-chan []cid.Cid) (<-chan block.Result, <-chan error) {
 	if ses.bs != nil {
 		return ses.streamWithStore(ctx, in)
 	}
 
-	ctx, cancel := context.WithCancel(ctx)
-	s := block.NewStream(ctx)
-
+	stream, errOut := block.NewStream(ctx), make(chan error, 1)
 	go func() {
+		defer close(errOut)
 		for {
 			select {
 			case ids, ok := <-in:
 				if !ok {
-					return
-				}
-
-				reqs := ses.request(ctx, ids)
-				if len(reqs) == 0 {
+					stream.Close()
+					in = nil
 					continue
 				}
 
-				s.Enqueue(reqs...)
+				stream.Enqueue(ses.request(ctx, ids)...)
 			case <-ses.ctx.Done():
 				if ses.err != nil {
-					s.Error(ses.err)
+					errOut <- ses.err
 				}
 
-				cancel()
 				return
-			case <-ctx.Done():
+			case <-stream.Done():
 				return
 			}
 		}
 	}()
 
-	return s.Blocks(), s.Errors()
+	return stream.Output(), errOut
 }
 
 // Blocks fetches Blocks by their CIDs evenly from the remote providers in the session.
 // Block order is guaranteed to be the same as requested.
-func (ses *Session) Blocks(ctx context.Context, ids []cid.Cid) (<-chan blocks.Block, <-chan error) {
+func (ses *Session) Blocks(ctx context.Context, ids []cid.Cid) (<-chan block.Result, <-chan error) {
 	if len(ids) == 0 {
-		ch := make(chan blocks.Block)
+		ch := make(chan block.Result)
 		close(ch)
 		return ch, nil
 	}
@@ -99,22 +93,22 @@ func (ses *Session) Blocks(ctx context.Context, ids []cid.Cid) (<-chan blocks.Bl
 		return ses.blocksWithStore(ctx, ids)
 	}
 
-	ctx, cancel := context.WithCancel(ctx)
-	s := block.NewStream(ctx)
+	stream, errOut := block.NewStream(ctx), make(chan error, 1)
+	stream.Enqueue(ses.request(ctx, ids)...)
+	stream.Close()
+
 	go func() {
+		defer close(errOut)
 		select {
 		case <-ses.ctx.Done():
 			if ses.err != nil {
-				s.Error(ses.err)
+				errOut <- ses.err
 			}
-
-			cancel()
-		case <-ctx.Done():
+		case <-stream.Done():
 		}
 	}()
 
-	s.Enqueue(ses.request(ctx, ids)...)
-	return s.Blocks(), s.Errors()
+	return stream.Output(), errOut
 }
 
 // request requests providers in the session for Blocks and writes them out to the chan.
@@ -142,10 +136,18 @@ func (ses *Session) request(ctx context.Context, ids []cid.Cid) (reqs []*block.R
 
 // distribute splits ids between providers to download from multiple sources.
 func (ses *Session) distribute(ids []cid.Cid) [][]cid.Cid {
-	prs, l := int(atomic.LoadUint32(&ses.prvs)), len(ids)
+	filtered := make([]cid.Cid, 0, len(ids))
+	for _, id := range ids {
+		if !id.Defined() {
+			continue
+		}
+		filtered = append(filtered, id)
+	}
+
+	prs, l := int(atomic.LoadUint32(&ses.prvs)), len(filtered)
 	sets := make([][]cid.Cid, prs)
 	for i := 0; i < prs; i++ {
-		sets[i] = ids[i*l/prs : (i+1)*l/prs]
+		sets[i] = filtered[i*l/prs : (i+1)*l/prs]
 	}
 
 	return sets
@@ -168,44 +170,38 @@ func (ses *Session) requestId() uint32 {
 	return atomic.AddUint32(&ses.reqN, 1)
 }
 
-func (ses *Session) streamWithStore(ctx context.Context, in <-chan []cid.Cid) (<-chan blocks.Block, <-chan error) {
-	outB, outErr := make(chan blocks.Block, len(in)), make(chan error, 1)
+func (ses *Session) streamWithStore(ctx context.Context, in <-chan []cid.Cid) (<-chan block.Result, <-chan error) {
+	outR, outErr := make(chan block.Result, len(in)), make(chan error, 1)
 	go func() {
-		defer close(outB)
+		defer close(outR)
 		defer close(outErr)
 
-		ctx, cancel := context.WithCancel(ctx)
-		defer cancel()
-
-		var j *blockJob
-		head := make(chan *blockJob, 1)
-		back := head
+		first := make(chan *blockJob, 1)
+		last := first
 
 		for {
 			select {
 			case ids, ok := <-in:
 				if !ok {
-					close(back)
+					close(last)
 					in = nil
 					continue
 				}
 
-				j = newJob(ids, back)
-				if !ses.work(ctx, j) {
-					return
-				}
-
-				back = j.next
-			case j, ok := <-head:
+				last = ses.process(ctx, ids, last)
+			case j, ok := <-first:
 				if !ok {
 					return
 				}
 
-				if !j.sendResults(ctx, outB, outErr) {
-					return
+				for _, res := range j.results {
+					select {
+					case outR <- *res:
+					case <-j.ctx.Done():
+					}
 				}
 
-				head = j.next
+				first = j.next
 			case <-ses.ctx.Done():
 				if ses.err != nil {
 					select {
@@ -217,32 +213,31 @@ func (ses *Session) streamWithStore(ctx context.Context, in <-chan []cid.Cid) (<
 
 				return
 			case <-ctx.Done():
+				return
 			}
 		}
 	}()
 
-	return outB, outErr
+	return outR, outErr
 }
 
-func (ses *Session) blocksWithStore(ctx context.Context, ids []cid.Cid) (<-chan blocks.Block, <-chan error) {
-	outB, outErr := make(chan blocks.Block, len(ids)), make(chan error, 1)
+func (ses *Session) blocksWithStore(ctx context.Context, ids []cid.Cid) (<-chan block.Result, <-chan error) {
+	outR, outErr := make(chan block.Result, len(ids)), make(chan error, 1)
 
 	go func() {
-		defer close(outB)
+		defer close(outR)
 		defer close(outErr)
 
-		ctx, cancel := context.WithCancel(ctx)
-		defer cancel()
-
 		done := make(chan *blockJob, 1)
-		if !ses.work(ctx, newJob(ids, done)) {
-			return
-		}
+		ses.process(ctx, ids, done)
 
 		select {
 		case j := <-done:
-			if !j.sendResults(ctx, outB, outErr) {
-				return
+			for _, res := range j.results {
+				select {
+				case outR <- *res:
+				case <-j.ctx.Done():
+				}
 			}
 		case <-ses.ctx.Done():
 			if ses.err != nil {
@@ -256,79 +251,74 @@ func (ses *Session) blocksWithStore(ctx context.Context, ids []cid.Cid) (<-chan 
 		}
 	}()
 
-	return outB, outErr
+	return outR, outErr
 }
 
-func (ses *Session) work(ctx context.Context, j *blockJob) bool {
-	for {
+func (ses *Session) process(ctx context.Context, ids []cid.Cid, done chan *blockJob) chan *blockJob {
+	last := make(chan *blockJob, 1)
+	j := newJob(ctx, ids, done, last)
+	select {
+	case ses.jobs <- j:
+	case <-ses.ctx.Done():
+	default:
+		ses.spawnWorker()
 		select {
 		case ses.jobs <- j:
-			return true
-		case <-ctx.Done():
-			return false
-		default:
-			ses.spawnWorker(ctx)
-			select {
-			case ses.jobs <- j:
-				return true
-			case <-ctx.Done():
-				return false
-			}
+		case <-ses.ctx.Done():
 		}
 	}
+
+	return last
 }
 
-func (ses *Session) spawnWorker(ctx context.Context) {
+func (ses *Session) spawnWorker() {
 	if atomic.AddUint32(&ses.workers, 1) >= maxAvailableWorkers {
 		return
 	}
 
-	go ses.worker(ctx)
+	go ses.worker()
 }
 
-func (ses *Session) worker(ctx context.Context) {
+func (ses *Session) worker() {
 	for {
 		select {
 		case j := <-ses.jobs:
 			var fetch bool
 			var fetched []blocks.Block
-			var toFetch = make([]cid.Cid, len(j.bos))
+			var toFetch = make([]cid.Cid, len(j.results))
 
-			for i, bo := range j.bos {
-				bo.Block, bo.Error = ses.bs.Get(bo.Id)
-				if bo.Block == nil {
-					toFetch[i] = bo.Id
+			for i, res := range j.results {
+				res.Block, res.Error = ses.bs.Get(res.Cid)
+				if res.Error != nil {
+					toFetch[i] = res.Cid
 					fetch = true
+				} else {
+					continue
 				}
 			}
 
 			if fetch {
+
+				// FIXME Work with requests directly
+				s := block.NewStream(j.ctx)
+				s.Enqueue(ses.request(j.ctx, toFetch)...)
+				s.Close()
+
+
 				fetched = make([]blocks.Block, 0, len(toFetch))
-
-				s := block.NewStream(ctx)
-				s.Enqueue(ses.request(ctx,toFetch)...)
-
-				for i, id := range toFetch { // ordering is guaranteed
+				for i, id := range toFetch {
 					if !id.Defined() {
 						continue
 					}
 
 					select {
-					case b := <-s.Blocks():
-						if id.Equals(b.Cid()) {
-							j.bos[i].Block = b
-						} else {
-							for _, bo := range j.bos {
-								if bo.Id.Equals(b.Cid()) {
-									bo.Block = b
-								}
-							}
+					case res := <-s.Output():
+						*j.results[i] = res
+						if res.Block != nil {
+							fetched = append(fetched, res.Block)
 						}
-						fetched = append(fetched, b)
-					case err := <-s.Errors():
-						j.bos[i].Error = err
-					case <-ctx.Done():
-						return
+					case <-j.ctx.Done():
+						j.results[i].Error = j.ctx.Err()
 					}
 				}
 			}
@@ -341,54 +331,30 @@ func (ses *Session) worker(ctx context.Context) {
 						log.Errorf("Failed to save fetched blocks: %ses", err)
 					}
 				}
-			case <-ctx.Done():
-				return
+			case <-j.ctx.Done():
 			}
-		case <-ctx.Done():
+		case <-ses.ctx.Done():
 			return
 		}
 	}
 }
 
 type blockJob struct {
-	bos        []*block.Option
+	ctx        context.Context
+	results    []*block.Result
 	next, done chan *blockJob
 }
 
-func newJob(ids []cid.Cid, done chan *blockJob) *blockJob {
-	bos := make([]*block.Option, len(ids))
+func newJob(ctx context.Context, ids []cid.Cid, done, next chan *blockJob) *blockJob {
+	results := make([]*block.Result, len(ids))
 	for i, id := range ids {
-		bos[i] = &block.Option{Id: id}
+		results[i] = &block.Result{Cid: id}
 	}
 
 	return &blockJob{
-		bos:   bos,
-		done:  done,
-		next:  make(chan *blockJob, 1),
+		ctx:     ctx,
+		results: results,
+		done:    done,
+		next:    next,
 	}
-}
-
-func (j *blockJob) sendResults(ctx context.Context, outB chan blocks.Block, outErr chan error) bool {
-	for _, bo := range j.bos {
-		if bo.Block != nil {
-			select {
-			case outB <- bo.Block:
-			case <-ctx.Done():
-				return false
-			}
-			continue
-		}
-
-		if bo.Error == nil {
-			bo.Error = blockstore.ErrNotFound
-		}
-
-		select {
-		case outErr <- bo.Error:
-		case <-ctx.Done():
-			return false
-		}
-	}
-
-	return true
 }

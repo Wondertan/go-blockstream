@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io"
 
-	blocks "github.com/ipfs/go-block-format"
 	logging "github.com/ipfs/go-log/v2"
 )
 
@@ -13,47 +12,45 @@ var log = logging.Logger("blockstream")
 
 const outputSize = 32
 
-type stream struct {
-	ctx    context.Context
-	queue  *RequestQueue
-	outB chan blocks.Block
-	outErr chan error
+type Stream struct {
+	ctx   context.Context
+	queue *RequestQueue
+	out   chan Result
+	done, close chan struct{}
 }
 
-func NewStream(ctx context.Context) *stream {
-	s := &stream{
-		ctx: ctx,
-		queue: NewRequestQueue(ctx.Done()),
-		outB: make(chan blocks.Block, outputSize),
-		outErr: make(chan error, 1),
+func NewStream(ctx context.Context) *Stream {
+	done, cls := make(chan struct{}), make(chan struct{})
+	s := &Stream{
+		ctx:   ctx,
+		queue: NewRequestQueue(cls),
+		out:   make(chan Result, outputSize),
+		done: done,
+		close: cls,
 	}
 	go s.stream()
 	return s
 }
 
-func (s *stream) Enqueue(reqs ...*Request) {
+func (s *Stream) Done() <-chan struct{}{
+	return s.done
+}
+
+func (s *Stream) Close() {
+	close(s.close)
+}
+
+func (s *Stream) Enqueue(reqs ...*Request) {
 	s.queue.Enqueue(reqs...)
 }
 
-func (s *stream) Blocks() <-chan blocks.Block {
-	return s.outB
+func (s *Stream) Output() <-chan Result {
+	return s.out
 }
 
-func (s *stream) Errors() <-chan error {
-	return s.outErr
-}
-
-func (s *stream) Error(err error) {
-	select {
-	case s.outErr <- err:
-	case <-s.ctx.Done():
-		return
-	}
-}
-
-func (s *stream) stream() {
-	defer close(s.outB)
-	defer close(s.outErr)
+func (s *Stream) stream() {
+	defer close(s.out)
+	defer close(s.done)
 
 	for {
 		req := s.queue.Back()
@@ -64,22 +61,22 @@ func (s *stream) stream() {
 		for {
 			bs, err := req.Next()
 			if err != nil {
-				if errors.Is(err, io.EOF) {
-					break
-				}
-
-				for _, id := range req.Remains() {
-					select {
-					case s.outErr <- &Error{Cid: id, Err: err}:
-					case <-s.ctx.Done():
-						return
+				if !errors.Is(err, io.EOF) {
+					for _, id := range req.Remains() {
+						select {
+						case s.out <- Result{Cid: id, Error: err}:
+						case <-s.ctx.Done():
+							return
+						}
 					}
 				}
+
+				break
 			}
 
 			for _, b := range bs {
 				select {
-				case s.outB <- b:
+				case s.out <- Result{Cid: b.Cid(), Block: b}:
 				case <-s.ctx.Done():
 					return
 				}

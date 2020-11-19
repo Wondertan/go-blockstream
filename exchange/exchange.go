@@ -62,8 +62,24 @@ func (f *fetcher) GetBlocks(ctx context.Context, ids []cid.Cid) (<-chan blocks.B
 		return nil, f.err
 	}
 
-	bch, _ := f.ses.Blocks(ctx, ids)
-	return bch, nil
+	outB := make(chan blocks.Block)
+	go func() {
+		res, _ := f.ses.Blocks(ctx, ids)
+		for {
+			select {
+			case res := <-res:
+				select {
+				case outB <- res.Block:
+				case <-ctx.Done():
+					return
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	return outB, nil
 }
 
 func getBlock(
