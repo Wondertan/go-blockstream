@@ -80,14 +80,14 @@ func (bs *BlockStream) Close() error {
 
 // Session starts new BlockStream session between current node and providing 'peers'.
 func (bs *BlockStream) Session(ctx context.Context, peers []peer.ID, opts ...SessionOption) (*Session, error) {
-	tkn, err := access.GetToken(ctx)
-	if err != nil {
-		return nil, err
-	}
-
 	ses := newSession(ctx, opts...)
 	if ses.offline {
 		return ses, nil
+	}
+
+	tkn, err := access.GetToken(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	for _, p := range peers {
