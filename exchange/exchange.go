@@ -2,6 +2,7 @@ package exchange
 
 import (
 	"context"
+	log2 "github.com/ipfs/go-log"
 
 	"github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
@@ -10,6 +11,8 @@ import (
 
 	"github.com/Wondertan/go-blockstream"
 )
+
+var log = log2.Logger("stream-exchange")
 
 type exchange blockstream.BlockStream
 
@@ -65,27 +68,23 @@ func (f *fetcher) GetBlocks(ctx context.Context, ids []cid.Cid) (<-chan blocks.B
 	outB := make(chan blocks.Block)
 	go func() {
 		close(outB)
-		res, err := f.ses.Blocks(ctx, ids)
-		for {
-			select {
-			case res, ok := <-res:
-				if !ok {
-					return
-				}
-				if res.Block == nil {
-					continue
-				}
+		resCh, errCh := f.ses.Blocks(ctx, ids)
+		for res := range resCh {
+			if res.Block == nil {
+				log.Warnf("Failed to retrieve %s: %s", res.Cid, res.Error)
+				continue
+			}
 
-				select {
-				case outB <- res.Block:
-				case <-ctx.Done():
-					return
-				}
-			case <-err:
-				return
+			select {
+			case outB <- res.Block:
 			case <-ctx.Done():
 				return
 			}
+		}
+
+		err := <-errCh
+		if err != nil {
+			log.Errorf("Stream failed with: %s", err)
 		}
 	}()
 
