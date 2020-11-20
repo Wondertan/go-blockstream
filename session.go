@@ -172,7 +172,7 @@ func (ses *Session) requestId() uint32 {
 }
 
 func (ses *Session) streamWithStore(ctx context.Context, in <-chan []cid.Cid) (<-chan block.Result, <-chan error) {
-	outR, outErr := make(chan block.Result, len(in)), make(chan error, 1)
+	outR, outErr := make(chan block.Result, 1024), make(chan error, 1)
 	go func() {
 		defer close(outR)
 		defer close(outErr)
@@ -220,7 +220,7 @@ func (ses *Session) streamWithStore(ctx context.Context, in <-chan []cid.Cid) (<
 }
 
 func (ses *Session) blocksWithStore(ctx context.Context, ids []cid.Cid) (<-chan block.Result, <-chan error) {
-	outR, outErr := make(chan block.Result, len(ids)), make(chan error, 1)
+	outR, outErr := make(chan block.Result, 1024), make(chan error, 1)
 
 	go func() {
 		defer close(outR)
