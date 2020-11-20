@@ -39,14 +39,17 @@ func (rq *RequestQueue) Enqueue(reqs ...*Request) {
 func (rq *RequestQueue) Back() *Request {
 	select {
 	case <-rq.sig:
-		rq.m.RLock()
-		e := rq.l.Back()
-		rq.m.RUnlock()
-
-		return e.Value.(*Request)
 	case <-rq.done:
-		return nil
 	}
+
+	rq.m.RLock()
+	e := rq.l.Back()
+	rq.m.RUnlock()
+
+	if e != nil {
+		return e.Value.(*Request)
+	}
+	return nil
 }
 
 func (rq *RequestQueue) BackPopDone() *Request {

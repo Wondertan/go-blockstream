@@ -16,13 +16,13 @@ import (
 	"github.com/Wondertan/go-blockstream/block"
 )
 
-var ErrStreamsReset = errors.New("all streams reset")
+var ErrNoProviders = errors.New("blockstream: no providers")
 
 var log = logging.Logger("blockstream")
 
 const Protocol protocol.ID = "/blockstream/1.0.0"
 
-const collectorsDefault = 8
+const collectorsDefault = 32
 
 type BlockStream struct {
 	ctx context.Context
@@ -78,11 +78,17 @@ func (bs *BlockStream) Close() error {
 	return nil
 }
 
-// TODO Define opts.
-// Session starts new BlockStream session between current node and providing 'peers' within the `token` namespace.
-// Autosave defines if received Blocks should be automatically put into Blockstore.
-func (bs *BlockStream) Session(ctx context.Context, token access.Token, autosave bool, peers ...peer.ID) (*Session, error) {
-	ses := newSession(ctx)
+// Session starts new BlockStream session between current node and providing 'peers'.
+func (bs *BlockStream) Session(ctx context.Context, peers []peer.ID, opts ...SessionOption) (*Session, error) {
+	ses := newSession(ctx, opts...)
+	if ses.offline {
+		return ses, nil
+	}
+
+	tkn, err := access.GetToken(ctx)
+	if err != nil {
+		return nil, err
+	}
 
 	for _, p := range peers {
 		s, err := bs.Host.NewStream(ctx, p, Protocol)
@@ -90,26 +96,29 @@ func (bs *BlockStream) Session(ctx context.Context, token access.Token, autosave
 			return nil, err
 		}
 
-		err = giveHand(s, token)
+		err = giveHand(s, tkn)
 		if err != nil {
 			s.Reset()
 			return nil, err
 		}
 
+		var once sync.Once
 		ses.addProvider(s, func(f func() error) {
 			bs.wg.Add(1)
 			defer bs.wg.Done()
 
 			if err := f(); err != nil {
-				log.Error(err)
-				s.Reset()
-				ses.removeProvider()
+				once.Do(func() {
+					s.Reset()
+					log.Errorf("Failed provider %s for session %s: %s", p.Pretty(), tkn, err)
 
-				if ses.getProviders() == 0 {
-					log.Error("Closing session: ", ErrStreamsReset)
-					ses.err = ErrStreamsReset
-					ses.cancel()
-				}
+					if ses.removeProvider() == 0 {
+						log.Errorf("Terminating session %s: %s", err)
+
+						ses.err = ErrNoProviders
+						ses.cancel()
+					}
+				})
 			}
 		})
 	}
@@ -118,9 +127,10 @@ func (bs *BlockStream) Session(ctx context.Context, token access.Token, autosave
 }
 
 func (bs *BlockStream) handler(s network.Stream) error {
+	p := s.Conn().RemotePeer()
 	var done chan<- error
 	_, err := takeHand(s, func(t access.Token) (err error) {
-		done, err = bs.Granter.Granted(t, s.Conn().RemotePeer())
+		done, err = bs.Granter.Granted(t, p)
 		return
 	})
 	if err != nil {
@@ -135,7 +145,7 @@ func (bs *BlockStream) handler(s network.Stream) error {
 
 			err := f()
 			if err != nil {
-				log.Error(err)
+				log.Errorf("Failed to respond to peer %s: %s", p.Pretty(), err)
 			}
 
 			once.Do(func() {

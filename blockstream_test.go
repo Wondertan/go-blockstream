@@ -3,10 +3,11 @@ package blockstream
 import (
 	"context"
 	"crypto/rand"
+	"github.com/Wondertan/go-blockstream/block"
+	"github.com/stretchr/testify/assert"
 	"sync"
 	"testing"
 
-	blocks "github.com/ipfs/go-block-format"
 	"github.com/libp2p/go-libp2p-core/peer"
 	mocknet "github.com/libp2p/go-libp2p/p2p/net/mock"
 	"github.com/stretchr/testify/require"
@@ -24,13 +25,14 @@ func TestBlockStream(t *testing.T) {
 		tkn         = access.Token("test")
 	)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx := access.WithToken(context.Background(), tkn)
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	bs, cids := test.RandBlockstore(t, rand.Reader, blocksCount, size)
 
 	net, err := mocknet.FullMeshConnected(ctx, nodesCount)
-	require.Nil(t, err, err)
+	require.NoError(t, err, err)
 	hs := net.Hosts()
 
 	nodes := make([]*BlockStream, nodesCount)
@@ -60,7 +62,7 @@ func TestBlockStream(t *testing.T) {
 			defer wg.Done()
 
 			var er error
-			sessions[i], er = n.Session(ctx, tkn, false, peers...)
+			sessions[i], er = n.Session(ctx, peers)
 			if er != nil {
 				once.Do(func() {
 					err = er
@@ -72,14 +74,22 @@ func TestBlockStream(t *testing.T) {
 	wg.Wait()
 	require.Nil(t, err, err)
 
-	chans := make([]<-chan blocks.Block, nodesCount)
+	results, errs := make([]<-chan block.Result, nodesCount), make([]<-chan error, nodesCount)
 	for i, s := range sessions {
-		chans[i], err = s.Blocks(ctx, cids)
-		require.Nil(t, err, err)
+		results[i], errs[i] = s.Blocks(ctx, cids)
 	}
 
-	for _, ch := range chans {
-		assertChan(t, ch, cids, blocksCount)
+	for i, ch := range results {
+		for _, id := range cids {
+			res, ok := <-ch
+			require.True(t, ok)
+			assert.Equal(t, id, res.Cid)
+			assert.NotNil(t, res.Block)
+			assert.NoError(t, res.Error)
+		}
+
+		_, ok := <-errs[i]
+		assert.False(t, ok)
 	}
 
 	cancel()
@@ -91,6 +101,6 @@ func TestBlockStream(t *testing.T) {
 
 	for _, n := range nodes {
 		err = n.Close()
-		require.Nil(t, err, err)
+		require.NoError(t, err, err)
 	}
 }

@@ -11,8 +11,12 @@ import (
 	blockstore "github.com/ipfs/go-ipfs-blockstore"
 )
 
+func EmptyBlockstore() blockstore.Blockstore {
+	return blockstore.NewBlockstore(dsync.MutexWrap(datastore.NewMapDatastore()))
+}
+
 func RandBlockstore(t *testing.T, rand io.Reader, count, size int) (blockstore.Blockstore, []cid.Cid) {
-	bstore := blockstore.NewBlockstore(dsync.MutexWrap(datastore.NewMapDatastore()))
+	bstore := EmptyBlockstore()
 	bs, ids := RandBlocks(t, rand, count, size)
 	for _, b := range bs {
 		err := bstore.Put(b)

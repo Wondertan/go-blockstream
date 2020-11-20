@@ -19,16 +19,3 @@ func TestContext_Providers(t *testing.T) {
 	assert.Nil(t, err, err)
 	assert.NotEmpty(t, peers)
 }
-
-func TestContext_Token(t *testing.T) {
-	ctx := context.Background()
-
-	tkn, err := GetToken(ctx)
-	assert.Zero(t, tkn)
-	assert.Equal(t, ErrNoToken, err)
-
-	ctx = WithToken(ctx, "test")
-	tkn, err = GetToken(ctx)
-	assert.Nil(t, err, err)
-	assert.NotZero(t, tkn)
-}

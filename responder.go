@@ -51,10 +51,12 @@ func (r *responder) readLoop() error {
 
 		if len(ids) == 0 {
 			r.rq.Cancel(id)
+			log.Debugf("[Requester] Request %d is cancelled", id)
 			continue
 		}
 
 		// TODO Add limiting for both queues to exclude DOS vector, if it is reached - reset the stream
+		log.Debugf("[Responder] Received request %d", id)
 		req := block.NewRequest(r.ctx, id, ids)
 		r.rq.Enqueue(req)
 		select {
@@ -83,8 +85,10 @@ func (r *responder) writeLoop() error {
 			if err != nil {
 				return err
 			}
+			log.Debugf("[Responder] Sent blocks for request %d", req.Id())
 		}
 
+		log.Debugf("[Responder] Request %d is fulfilled!", req.Id())
 		r.rq.PopBack()
 	}
 }

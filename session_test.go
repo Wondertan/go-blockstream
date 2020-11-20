@@ -3,24 +3,28 @@ package blockstream
 import (
 	"context"
 	"crypto/rand"
-	"io"
-	"testing"
-
+	"github.com/Wondertan/go-blockstream/block"
+	"github.com/Wondertan/go-blockstream/test"
 	blocks "github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
 	blockstore "github.com/ipfs/go-ipfs-blockstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/Wondertan/go-blockstream/block"
-	"github.com/Wondertan/go-blockstream/test"
+	"io"
+	"testing"
+	"time"
 )
 
 func TestRequestResponder(t *testing.T) {
+	const (
+		count = 8
+		size  = 256
+	)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	bs, ids := test.RandBlocks(t, rand.Reader, 8, 256)
+	bs, ids := test.RandBlocks(t, rand.Reader, count, size)
 
 	in, out := make(chan *block.Request, 4), make(chan *block.Request, 4)
 	newRequestPair(ctx, in, out)
@@ -35,7 +39,7 @@ func TestRequestResponder(t *testing.T) {
 
 	for _, b := range bs {
 		bs, err := reqIn.Next()
-		assert.Nil(t, err)
+		assert.NoError(t, err, err)
 		assert.Equal(t, b, bs[0])
 	}
 
@@ -70,16 +74,19 @@ func TestSessionStream(t *testing.T) {
 		close(in)
 	}()
 
-	out, err := ses.Stream(ctx, in)
+	res, err := ses.Stream(ctx, in)
 	for i := 0; i < times; i++ {
-		select {
-		case err := <-err:
-			assert.Nil(t, err, err)
-			break
-		default:
-			assertChan(t, out, ids[i*count/times:(i+1)*count/times], count/times)
+		for _, id := range ids[i*count/times : (i+1)*count/times] {
+			res, ok := <-res
+			require.True(t, ok)
+			assert.Equal(t, id, res.Cid)
+			assert.NotNil(t, res.Block)
+			assert.NoError(t, res.Error)
 		}
 	}
+
+	_, ok := <-err
+	assert.False(t, ok)
 }
 
 func TestSessionBlocks(t *testing.T) {
@@ -99,14 +106,30 @@ func TestSessionBlocks(t *testing.T) {
 	addProvider(ctx, ses, bstore, msgSize)
 	addProvider(ctx, ses, bstore, msgSize)
 
-	ch1, err := ses.Blocks(ctx, ids[:count/2])
-	require.Nil(t, err, err)
+	res1, err1 := ses.Blocks(ctx, ids[:count/2])
+	res2, err2 := ses.Blocks(ctx, ids[count/2:])
 
-	ch2, err := ses.Blocks(ctx, ids[count/2:])
-	require.Nil(t, err, err)
+	for _, id := range ids[:count/2] {
+		res, ok := <-res1
+		require.True(t, ok)
+		assert.Equal(t, id, res.Cid)
+		assert.NotNil(t, res.Block)
+		assert.NoError(t, res.Error)
+	}
 
-	assertChan(t, ch1, ids[:count/2], count/2)
-	assertChan(t, ch2, ids[count/2:], count/2)
+	_, ok := <-err1
+	assert.False(t, ok)
+
+	for _, id := range ids[count/2:] {
+		res, ok := <-res2
+		require.True(t, ok)
+		assert.Equal(t, id, res.Cid)
+		assert.NotNil(t, res.Block)
+		assert.NoError(t, res.Error)
+	}
+
+	_, ok = <-err2
+	assert.False(t, ok)
 }
 
 func TestSessionNotFound(t *testing.T) {
@@ -128,16 +151,45 @@ func TestSessionNotFound(t *testing.T) {
 	addProvider(ctx, ses, bstore, msgSize)
 	addProvider(ctx, ses, bstore, msgSize)
 
-	ch, err := ses.Blocks(ctx, ids)
-	require.Nil(t, err, err)
-
-	for range make([]bool, missing) {
-		_, ok := <-ch
-		assert.True(t, ok)
+	var i int
+	res, err := ses.Blocks(ctx, ids)
+	for res := range res {
+		if i == missing {
+			assert.Error(t, res.Error)
+		}
+		i++
 	}
 
-	_, ok := <-ch
+	_, ok := <-err
 	assert.False(t, ok)
+}
+
+func TestSessionBlockstoreSave(t *testing.T) {
+	const (
+		count   = 32
+		size    = 64
+		msgSize = 256
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	empty := test.EmptyBlockstore()
+	bstore, ids := test.RandBlockstore(t, rand.Reader, count, size)
+
+	ses := newSession(ctx, Blockstore(empty), Save(true))
+	addProvider(ctx, ses, bstore, msgSize)
+
+	_, err := ses.Blocks(ctx, ids)
+	_, ok := <-err
+	assert.False(t, ok)
+
+	time.Sleep(time.Millisecond * 100) // Needs some time to save
+	for _, id := range ids {
+		ok, err := empty.Has(id)
+		require.NoError(t, err, err)
+		assert.True(t, ok, "Some blocks are missing")
+	}
 }
 
 func addProvider(ctx context.Context, ses *Session, bstore blockstore.Blockstore, msgSize int) {

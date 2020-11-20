@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io"
 
-	blocks "github.com/ipfs/go-block-format"
 	logging "github.com/ipfs/go-log/v2"
 )
 
@@ -13,28 +12,46 @@ var log = logging.Logger("blockstream")
 
 const outputSize = 32
 
-type stream struct {
-	ctx    context.Context
-	queue  *RequestQueue
-	output chan blocks.Block
+type Stream struct {
+	ctx         context.Context
+	queue       *RequestQueue
+	out         chan Result
+	done, close chan struct{}
 }
 
-func NewStream(ctx context.Context) *stream {
-	s := &stream{ctx: ctx, queue: NewRequestQueue(ctx.Done()), output: make(chan blocks.Block, outputSize)}
+func NewStream(ctx context.Context) *Stream {
+	done, cls := make(chan struct{}), make(chan struct{})
+	s := &Stream{
+		ctx:   ctx,
+		queue: NewRequestQueue(cls),
+		out:   make(chan Result, outputSize),
+		done:  done,
+		close: cls,
+	}
 	go s.stream()
 	return s
 }
 
-func (s *stream) Enqueue(reqs ...*Request) {
+func (s *Stream) Done() <-chan struct{} {
+	return s.done
+}
+
+func (s *Stream) Close() {
+	close(s.close)
+}
+
+func (s *Stream) Enqueue(reqs ...*Request) {
 	s.queue.Enqueue(reqs...)
 }
 
-func (s *stream) Output() <-chan blocks.Block {
-	return s.output
+func (s *Stream) Output() <-chan Result {
+	return s.out
 }
 
-func (s *stream) stream() {
-	defer close(s.output)
+func (s *Stream) stream() {
+	defer close(s.out)
+	defer close(s.done)
+
 	for {
 		req := s.queue.Back()
 		if req == nil {
@@ -44,17 +61,22 @@ func (s *stream) stream() {
 		for {
 			bs, err := req.Next()
 			if err != nil {
-				if errors.Is(err, io.EOF) {
-					break
+				if !errors.Is(err, io.EOF) {
+					for _, id := range req.Remains() {
+						select {
+						case s.out <- Result{Cid: id, Error: err}:
+						case <-s.ctx.Done():
+							return
+						}
+					}
 				}
 
-				log.Errorf("Aborting stream, request error: %s", err)
-				return
+				break
 			}
 
 			for _, b := range bs {
 				select {
-				case s.output <- b:
+				case s.out <- Result{Cid: b.Cid(), Block: b}:
 				case <-s.ctx.Done():
 					return
 				}

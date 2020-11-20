@@ -56,10 +56,12 @@ func (r *requester) writeLoop() error {
 
 				return fmt.Errorf("can't writeLoop request(%d): %w", req.Id(), err)
 			}
+			log.Debugf("[Requester] Sent request %d", req.Id())
 
 			go r.onCancel(req)
 			r.rq.Enqueue(req)
 		case req := <-r.cncl:
+			log.Debugf("[Requester] Request %d is cancelled", req.Id())
 			err := writeBlocksReq(r.rwc, req.Id(), nil)
 			if err != nil {
 				return fmt.Errorf("can't cancel request(%d): %w", req.Id(), err)
@@ -115,7 +117,9 @@ func (r *requester) readLoop() error {
 			}
 		}
 
+		log.Debugf("[Requester] Received blocks for request %d", req.Id())
 		if !req.Fill(bs) {
+			log.Debugf("[Requester] Request %d is fulfilled!", req.Id())
 			r.rq.PopBack()
 		}
 	}

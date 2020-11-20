@@ -3,6 +3,7 @@ package ipld
 import (
 	"context"
 	"crypto/rand"
+	"github.com/libp2p/go-libp2p-core/peer"
 	"io"
 	"testing"
 
@@ -17,33 +18,13 @@ import (
 	"github.com/Wondertan/go-blockstream"
 )
 
-func TestFetchDAG(t *testing.T) {
-	const (
-		nsize = 512
-		rsize = nsize * 256
-	)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	fillstore := blockstore.NewBlockstore(sync.MutexWrap(datastore.NewMapDatastore()))
-	emptystore := blockstore.NewBlockstore(sync.MutexWrap(datastore.NewMapDatastore()))
-
-	nd := dagFromReader(t, io.LimitReader(rand.Reader, rsize), &fakeAdder{fillstore}, nsize)
-	err := FetchDAG(ctx, nd.Cid(), &offlineStreamer{getter: fillstore.Get}, &fakeAdder{emptystore})
-	require.Nil(t, err, err)
-
-	assertEqualBlockstore(t, ctx, fillstore, emptystore)
-	assertEqualBlockstore(t, ctx, emptystore, fillstore)
-}
-
 func TestFetchAbsent(t *testing.T) {
 	const (
 		nsize = 512
 		rsize = nsize * 256
 	)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(access.WithToken(context.Background(), "test"))
 	defer cancel()
 
 	fillstore := blockstore.NewBlockstore(sync.MutexWrap(datastore.NewMapDatastore()))
@@ -67,28 +48,48 @@ func TestFetchAbsent(t *testing.T) {
 	n1.AddNodeLink("3", lv3)
 	fillstore.Put(n1)
 
+	nn1 := merkledag.NodeWithData([]byte{1})
+	nn1.AddNodeLink("al", n1)
+	fillstore.Put(nn1)
+
+	nnn1 := merkledag.NodeWithData([]byte{1})
+	nnn1.AddNodeLink("al", nn1)
+	fillstore.Put(nnn1)
+
+	nnnn1 := merkledag.NodeWithData([]byte{1})
+	nnnn1.AddNodeLink("al", nnn1)
+	fillstore.Put(nnnn1)
+
 	n2 := merkledag.NodeWithData([]byte{2})
-	n2.AddNodeLink("1", lv1)
+	n2.AddNodeLink("1", lv2)
 	n2.AddNodeLink("2", lv2)
 	n2.AddNodeLink("3", lv3)
 	fillstore.Put(n2)
 
+	nn2 := merkledag.NodeWithData([]byte{1})
+	nn2.AddNodeLink("al", n2)
+	fillstore.Put(nn2)
+
 	n3 := merkledag.NodeWithData([]byte{3})
-	n3.AddNodeLink("1", lv1)
+	n3.AddNodeLink("1", lv3)
 	n3.AddNodeLink("2", lv2)
 	n3.AddNodeLink("3", lv3)
 	fillstore.Put(n3)
 
+	nn3 := merkledag.NodeWithData([]byte{1})
+	nn3.AddNodeLink("al", n3)
+	fillstore.Put(nn3)
+
 	root := merkledag.NodeWithData(nil)
-	root.AddNodeLink("1", n1)
-	root.AddNodeLink("2", n2)
-	root.AddNodeLink("3", n3)
+	root.AddNodeLink("1", nnnn1)
+	root.AddNodeLink("2", nn2)
+	root.AddNodeLink("3", nn3)
 	fillstore.Put(root)
 
-	ses, err := l.Session(ctx, "", false, r.Host.ID())
+	ses, err := l.Session(ctx, []peer.ID{r.Host.ID()}, blockstream.Blockstore(halfstore), blockstream.Save(true))
 	require.Nil(t, err, err)
 
-	err = FetchAbsent(ctx, root.Cid(), ses, halfstore)
+	err = Traverse(context.Background(), root.Cid(), ses)
 	require.Nil(t, err, err)
 
 	assertEqualBlockstore(t, ctx, fillstore, halfstore)
