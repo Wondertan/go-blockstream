@@ -14,6 +14,9 @@ import (
 const (
 	maxAvailableWorkers = 128
 	requestBufferSize   = 8
+
+	// TODO Short-term solution to use a big buffer. It requires dynamic solution
+	streamBufferSize    = 512
 )
 
 // TODO Refactor this, my ayes hurt watching this
@@ -25,7 +28,7 @@ type Session struct {
 	reqs       chan *block.Request
 	err        error
 
-	jobch   chan *blockJob
+	jobch chan *blockJob
 
 	workers, jobs uint32
 
@@ -172,7 +175,7 @@ func (ses *Session) requestId() uint32 {
 }
 
 func (ses *Session) streamWithStore(ctx context.Context, in <-chan []cid.Cid) (<-chan block.Result, <-chan error) {
-	outR, outErr := make(chan block.Result, 1024), make(chan error, 1)
+	outR, outErr := make(chan block.Result, streamBufferSize), make(chan error, 1)
 	go func() {
 		defer close(outR)
 		defer close(outErr)
@@ -220,7 +223,7 @@ func (ses *Session) streamWithStore(ctx context.Context, in <-chan []cid.Cid) (<
 }
 
 func (ses *Session) blocksWithStore(ctx context.Context, ids []cid.Cid) (<-chan block.Result, <-chan error) {
-	outR, outErr := make(chan block.Result, 1024), make(chan error, 1)
+	outR, outErr := make(chan block.Result, streamBufferSize), make(chan error, 1)
 
 	go func() {
 		defer close(outR)
@@ -342,7 +345,7 @@ func (ses *Session) worker(id uint32) {
 }
 
 type blockJob struct {
-	id uint32
+	id         uint32
 	ctx        context.Context
 	results    []*block.Result
 	next, done chan *blockJob
@@ -355,7 +358,7 @@ func (ses *Session) newJob(ctx context.Context, ids []cid.Cid, done, next chan *
 	}
 
 	j := &blockJob{
-		id: atomic.AddUint32(&ses.jobs, 1),
+		id:      atomic.AddUint32(&ses.jobs, 1),
 		ctx:     ctx,
 		results: results,
 		done:    done,
