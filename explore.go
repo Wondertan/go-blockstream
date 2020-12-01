@@ -2,6 +2,7 @@ package blockstream
 
 import (
 	"context"
+
 	"github.com/Wondertan/go-blockstream/block"
 
 	"github.com/ipfs/go-cid"
@@ -17,7 +18,7 @@ func Explore(ctx context.Context, id cid.Cid, bs Streamer, h Explorer) error {
 	defer cancel()
 
 	remains := 1
-	in := make(chan []cid.Cid, 8)
+	in := make(chan []cid.Cid, 32)
 	in <- []cid.Cid{id}
 	defer close(in)
 

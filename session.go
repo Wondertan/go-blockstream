@@ -14,9 +14,6 @@ import (
 const (
 	maxAvailableWorkers = 128
 	requestBufferSize   = 8
-
-	// TODO Short-term solution to use a big buffer. It requires dynamic solution
-	streamBufferSize    = 512
 )
 
 // TODO Refactor this, my ayes hurt watching this
@@ -175,27 +172,37 @@ func (ses *Session) requestId() uint32 {
 }
 
 func (ses *Session) streamWithStore(ctx context.Context, in <-chan []cid.Cid) (<-chan block.Result, <-chan error) {
-	outR, outErr := make(chan block.Result, streamBufferSize), make(chan error, 1)
-	go func() {
-		defer close(outR)
-		defer close(outErr)
+	ctx, cancel := context.WithCancel(ctx)
+	outR, outErr := make(chan block.Result, len(in)), make(chan error, 1)
+	first := make(chan *blockJob, 1)
 
-		ctx, cancel := context.WithCancel(ctx)
-		defer cancel()
-
-		first := make(chan *blockJob, 1)
+	go func() { // handles input
 		last := first
-
 		for {
 			select {
 			case ids, ok := <-in:
 				if !ok {
 					close(last)
-					in = nil
-					continue
+					return
 				}
-
 				last = ses.process(ctx, ids, last)
+			case <-ses.ctx.Done():
+				return
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	go func() { // handles output
+		defer func() {
+			cancel()
+			close(outR)
+			close(outErr)
+		}()
+
+		for {
+			select {
 			case j, ok := <-first:
 				if !ok {
 					return
@@ -208,10 +215,8 @@ func (ses *Session) streamWithStore(ctx context.Context, in <-chan []cid.Cid) (<
 					select {
 					case outErr <- ses.err:
 					case <-ctx.Done():
-						return
 					}
 				}
-
 				return
 			case <-ctx.Done():
 				return
@@ -223,18 +228,18 @@ func (ses *Session) streamWithStore(ctx context.Context, in <-chan []cid.Cid) (<
 }
 
 func (ses *Session) blocksWithStore(ctx context.Context, ids []cid.Cid) (<-chan block.Result, <-chan error) {
-	outR, outErr := make(chan block.Result, streamBufferSize), make(chan error, 1)
+	ctx, cancel := context.WithCancel(ctx)
+	outR, outErr := make(chan block.Result, len(ids)), make(chan error, 1)
+	done := make(chan *blockJob, 1)
 
 	go func() {
-		defer close(outR)
-		defer close(outErr)
+		defer func() {
+			cancel()
+			close(outR)
+			close(outErr)
+		}()
 
-		ctx, cancel := context.WithCancel(ctx)
-		defer cancel()
-
-		done := make(chan *blockJob, 1)
 		ses.process(ctx, ids, done)
-
 		select {
 		case j := <-done:
 			j.write(outR)
@@ -245,7 +250,6 @@ func (ses *Session) blocksWithStore(ctx context.Context, ids []cid.Cid) (<-chan 
 				case <-ctx.Done():
 				}
 			}
-
 		case <-ctx.Done():
 		}
 	}()
@@ -288,7 +292,7 @@ func (ses *Session) worker(id uint32) {
 
 			var fetch bool
 			var fetched []blocks.Block
-			var toFetch = make([]cid.Cid, len(j.results))
+			toFetch := make([]cid.Cid, len(j.results))
 
 			for i, res := range j.results {
 				res.Block, res.Error = ses.bs.Get(res.Cid)
