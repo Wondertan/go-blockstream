@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/Wondertan/go-blockstream/block"
+	"github.com/Wondertan/go-blockstream/blocknet"
 	"github.com/Wondertan/go-blockstream/test"
 )
 
@@ -25,15 +26,17 @@ func TestRequester(t *testing.T) {
 
 	bs, in := test.RandBlocks(t, rand.Reader, count, size)
 
-	reqs := make(chan *block.Request, 1)
+	reqs := make(chan *block.RequestGroup, 1)
 	s := newTestRequester(t, ctx, reqs)
 
 	// normal case
-	req := block.NewRequest(ctx, 0, in)
+	req, err := block.NewRequestGroup(ctx, in[:8])
+	require.NoError(t, err)
+
 	reqs <- req
 	assertBlockReq(t, s, 0, in)
 
-	err := writeBlocksResp(s, 0, bs, nil)
+	err = blocknet.writeBlocksResp(s, 0, bs, nil)
 	require.Nil(t, err, err)
 
 	out, err := req.Next()
@@ -45,14 +48,16 @@ func TestRequester(t *testing.T) {
 	assert.Nil(t, out)
 
 	// cancel case
-	req = block.NewRequest(ctx, 1, in)
+	req, err = block.NewRequestGroup(ctx, in[8:16])
+	require.NoError(t, err)
+
 	reqs <- req
 	req.Cancel()
 
 	assertBlockReq(t, s, 1, in)
 	assertBlockReq(t, s, 1, nil)
 
-	err = writeBlocksResp(s, 1, bs, nil)
+	err = blocknet.writeBlocksResp(s, 1, bs, nil)
 	require.Nil(t, err, err)
 
 	out, err = req.Next()
@@ -60,11 +65,13 @@ func TestRequester(t *testing.T) {
 	assert.Equal(t, io.EOF, err)
 
 	// another normal case
-	req = block.NewRequest(ctx, 2, in)
+	req, err = block.NewRequestGroup(ctx, in[16:24])
+	require.NoError(t, err)
+
 	reqs <- req
 	assertBlockReq(t, s, 2, in)
 
-	err = writeBlocksResp(s, 2, bs, nil)
+	err = blocknet.writeBlocksResp(s, 2, bs, nil)
 	require.Nil(t, err, err)
 
 	out, err = req.Next()
@@ -76,12 +83,14 @@ func TestRequester(t *testing.T) {
 	assert.Nil(t, out)
 
 	// error case
-	req = block.NewRequest(ctx, 3, in)
+	req, err = block.NewRequestGroup(ctx, in[24:32])
+	require.NoError(t, err)
+
 	reqs <- req
 
 	assertBlockReq(t, s, 3, in)
 
-	err = writeBlocksResp(s, 3, nil, blockstore.ErrNotFound)
+	err = blocknet.writeBlocksResp(s, 3, nil, blockstore.ErrNotFound)
 	require.Nil(t, err, err)
 
 	bs, err = req.Next()

@@ -17,20 +17,31 @@ func TestRequestQueue(t *testing.T) {
 	_, ids := test.RandBlocks(t, rand.Reader, 8, 256)
 	rq := NewRequestQueue(ctx.Done())
 
-	rq.Enqueue(NewRequest(ctx, 0, ids))
-	rq.Enqueue(NewRequest(ctx, 1, ids))
-	rq.Enqueue(NewRequest(ctx, 2, ids))
-	rq.Enqueue(NewRequest(ctx, 3, ids))
+	req1 := newTestRequest(t, ctx, ids[:2])
+	rq.Enqueue(req1)
 
-	rq.Cancel(1)
-	rq.Cancel(2)
+	req2 := newTestRequest(t, ctx, ids[2:4])
+	rq.Enqueue(req2)
 
-	req := rq.BackPopDone()
-	assert.Equal(t, uint32(0), req.Id())
+	req3 := newTestRequest(t, ctx, ids[4:6])
+	rq.Enqueue(req3)
+
+	req4 := newTestRequest(t, ctx, ids[6:8])
+	rq.Enqueue(req4)
+
+	rq.Cancel(req1.Id())
+	rq.Cancel(req2.Id())
+
+	req := rq.Back()
+	assert.True(t, req1.Id().Equals(req.Id()))
 	rq.PopBack()
 
 	req = rq.BackPopDone()
-	assert.Equal(t, uint32(3), req.Id())
+	assert.True(t, req3.Id().Equals(req.Id()))
+	rq.PopBack()
+
+	req = rq.BackPopDone()
+	assert.True(t, req4.Id().Equals(req.Id()))
 	rq.PopBack()
 
 	assert.True(t, rq.Len() == 0, rq.Len())

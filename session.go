@@ -16,13 +16,13 @@ const requestBufferSize = 8
 type Session struct {
 	reqN, prvs uint32
 
-	reqs chan *block.Request
+	reqs chan *block.RequestGroup
 	ctx  context.Context
 }
 
 func newSession(ctx context.Context) *Session {
 	return &Session{
-		reqs: make(chan *block.Request, requestBufferSize),
+		reqs: make(chan *block.RequestGroup, requestBufferSize),
 		ctx:  ctx,
 	}
 }
@@ -85,15 +85,15 @@ func (ses *Session) Blocks(ctx context.Context, ids []cid.Cid) (<-chan blocks.Bl
 }
 
 // request requests providers in the session for Blocks and writes them out to the chan.
-func (ses *Session) request(ctx context.Context, ids []cid.Cid) (reqs []*block.Request) {
+func (ses *Session) request(ctx context.Context, ids []cid.Cid) (reqs []*block.RequestGroup) {
 	sets := ses.distribute(ids)
-	reqs = make([]*block.Request, 0, len(sets))
+	reqs = make([]*block.RequestGroup, 0, len(sets))
 	for _, set := range sets {
 		if len(set) == 0 {
 			continue
 		}
 
-		req := block.NewRequest(ctx, ses.requestId(), set)
+		req := block.NewRequestGroup(ctx, ses.requestId(), set)
 		select {
 		case ses.reqs <- req:
 			reqs = append(reqs, req)

@@ -17,29 +17,29 @@ func TestCollector(t *testing.T) {
 
 	bstore, ids := test.RandBlockstore(t, rand.Reader, 16, 256)
 
-	reqs := make(chan *Request, 1)
+	reqs := make(chan *RequestGroup, 1)
 	NewCollector(ctx, reqs, bstore, 512)
 
-	req := NewRequest(ctx, 0, ids)
+	req := newTestRequest(t, ctx, ids)
 	reqs <- req
 
 	for i := 0; i < 8; i++ {
 		bs, _ := req.Next()
 		for _, b := range bs {
 			ok, err := bstore.Has(b.Cid())
-			require.Nil(t, err, err)
+			require.NoError(t, err)
 			assert.True(t, ok)
 		}
 	}
 
-	req = NewRequest(ctx, 0, ids)
+	req = newTestRequest(t, ctx, ids)
 	reqs <- req
 
 	for i := 0; i < 8; i++ {
 		bs, _ := req.Next()
 		for _, b := range bs {
 			ok, err := bstore.Has(b.Cid())
-			require.Nil(t, err, err)
+			require.NoError(t, err)
 			assert.True(t, ok)
 		}
 	}

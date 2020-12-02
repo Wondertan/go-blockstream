@@ -1,0 +1,1185 @@
+Index: buffer.go
+===================================================================
+--- buffer.go	(revision 941a4aa5c13ab1b66debe77683bed72b122d6801)
++++ buffer.go	(revision 941a4aa5c13ab1b66debe77683bed72b122d6801)
+@@ -1,233 +0,0 @@
+-package blockstream
+-
+-import (
+-	"context"
+-	"errors"
+-	"sync/atomic"
+-
+-	blocks "github.com/ipfs/go-block-format"
+-	"github.com/ipfs/go-cid"
+-)
+-
+-var (
+-	errBufferOverflow = errors.New("blockstream: buffer overflow")
+-	errBufferClosed   = errors.New("blockstream: buffer closed")
+-)
+-
+-// buffer is a dynamically sized Block buffer with a strict CID ordering done with linked list.
+-type buffer struct {
+-	len, closed uint32 // atomic states of length and closage.
+-	input       chan []blocks.Block
+-	output      chan blocks.Block        // read, writeLoop channels for in/outcoming Blocks.
+-	blocks      map[cid.Cid]blocks.Block // only accessed inside `buffer()` routine, except for `Len()` method.
+-	queue       *cidQueue                // ordered list of CIDs
+-}
+-
+-// NewBuffer creates new ordered Block buffer given size and limit.
+-func NewBuffer(ctx context.Context, size, limit int) *buffer {
+-	buf := &buffer{
+-		input:  make(chan []blocks.Block, 8),
+-		output: make(chan blocks.Block, size/2),
+-		blocks: make(map[cid.Cid]blocks.Block, size/2), // decremented because of the `toWrite` slot in the `buffer()`
+-		queue:  newCidQueue(limit),
+-	}
+-	go buf.buffer(ctx, uint32(limit-size/2))
+-	return buf
+-}
+-
+-// Len returns the amount of all Blocks stored in the buffer.
+-func (buf *buffer) Len() int {
+-	return int(atomic.LoadUint32(&buf.len)) + len(buf.output)
+-}
+-
+-// Input returns channel to writeLoop Blocks into with unpredictable queue.
+-// It is safe to writeLoop to the chan arbitrary amount of Blocks as the buffer is dynamic.
+-// Might be also used to close the buffer.
+-func (buf *buffer) Input() chan []blocks.Block { // TODO Change this to write only
+-	return buf.input
+-}
+-
+-// Output returns channel with Blocks ordered by an Enqueue method.
+-func (buf *buffer) Output() <-chan blocks.Block {
+-	return buf.output
+-}
+-
+-// Enqueue adds CIDs as the order for blocks to be received with the Output.
+-// It is required that Enqueue is called first for Blocks' CIDs before they are actually received from the Input.
+-// Must be called only from one goroutine.
+-func (buf *buffer) Enqueue(ids ...cid.Cid) error {
+-	if buf.isClosed() {
+-		return errBufferClosed
+-	}
+-
+-	return buf.queue.Enqueue(ids...)
+-}
+-
+-// Close signals buffer to close.
+-// It may still work after to serve remaining Blocks.
+-// To terminate Buffer use context.
+-func (buf *buffer) Close() error {
+-	if buf.isClosed() {
+-		return errBufferClosed
+-	}
+-
+-	buf.close()
+-	return nil
+-}
+-
+-// buffer does actual buffering magic.
+-func (buf *buffer) buffer(ctx context.Context, limit uint32) {
+-	var (
+-		pending cid.Cid           // first CID in a queue to be sent.
+-		toWrite blocks.Block      // Block to be written.
+-		output  chan blocks.Block // switching input and output channel to control select blocking.
+-		input   = buf.input
+-	)
+-
+-	defer func() {
+-		l := atomic.LoadUint32(&buf.len)
+-		if l > 0 {
+-			log.Warnf("Buffer closed with %d Blocks remaining.", l)
+-		}
+-
+-		l = buf.queue.Len()
+-		if l > 0 {
+-			log.Warnf("Buffer closed with %d Blocks remained enqueued, but unserved.", l)
+-		}
+-
+-		close(buf.output)
+-		for id := range buf.blocks { // Blocks are not checked regarding their persistence in a queue,
+-			delete(buf.blocks, id) // so there is chance to get Blocks that wont be output and leak.
+-		}
+-		buf.queue = nil // explicitly remove ref on the list for GC to clean it.
+-	}()
+-
+-	for {
+-		select {
+-		case bs, ok := <-input: // on received Block:
+-			if !ok { // if closed
+-				buf.close()                          // signal closing,
+-				if atomic.LoadUint32(&buf.len) > 0 { // if there is something to writeLoop,
+-					buf.input = nil // block the current case,
+-					continue        // and continue writing.
+-				}
+-
+-				return // or stop.
+-			}
+-
+-			if atomic.AddUint32(&buf.len, uint32(len(bs))) >= limit && // increment internal buffer length and if
+-				toWrite != nil { // the limit is reached and there is something to output
+-				input = nil // block the input.
+-			}
+-
+-			for _, b := range bs { // iterate over blocks
+-				if b.Cid().Equals(pending) { // if it is a match,
+-					toWrite, output = b, buf.output // writeLoop the Block,
+-					continue
+-				}
+-
+-				buf.blocks[b.Cid()] = b // or store the received block in the map.
+-			}
+-		case output <- toWrite: // on sent Block:
+-			atomic.AddUint32(&buf.len, ^uint32(0))      // decrement internal buffer length,
+-			if buf.queue.Len() == 0 && buf.isClosed() { // check maybe it is time to close the buf,
+-				return
+-			}
+-
+-			output, toWrite, pending = nil, nil, cid.Undef // or block current select case and clean sent data.
+-			if input == nil {                              // if the input is blocked
+-				input = buf.input // unblock
+-			}
+-		case <-ctx.Done():
+-			buf.close()
+-			return
+-		}
+-
+-		if buf.queue.Len() > 0 && !pending.Defined() { // if there is something in a queue and no pending,
+-			pending = buf.queue.Dequeue() // define newer pending,
+-		}
+-
+-		if toWrite == nil { // if we don't have the pending Block,
+-			toWrite = buf.blocks[pending] // try to get it from the map,
+-			if toWrite != nil {           // and on success
+-				output = buf.output         // unblock output
+-				delete(buf.blocks, pending) // and remove it from the map.
+-			}
+-		}
+-	}
+-}
+-
+-func (buf *buffer) isClosed() bool {
+-	return atomic.LoadUint32(&buf.closed) == 1
+-}
+-
+-func (buf *buffer) close() {
+-	atomic.CompareAndSwapUint32(&buf.closed, 0, 1)
+-}
+-
+-// cidQueue is a lock-free linked list of CIDs that implements queue.
+-type cidQueue struct {
+-	len, limit  uint32
+-	back, front *cidQueueItem
+-}
+-
+-// cidQueueItem is an element of cidQueue.
+-type cidQueueItem struct {
+-	cid  cid.Cid
+-	next *cidQueueItem
+-}
+-
+-// newCidQueue creates new limited cidQueue.
+-func newCidQueue(limit int) *cidQueue {
+-	itm := &cidQueueItem{}
+-	return &cidQueue{limit: uint32(limit), back: itm, front: itm}
+-}
+-
+-// Len returns length of the queue.
+-func (l *cidQueue) Len() uint32 {
+-	return atomic.LoadUint32(&l.len)
+-}
+-
+-// Enqueue adds given CIDs to the front of the queue.
+-// Must be called only from one goroutine.
+-func (l *cidQueue) Enqueue(ids ...cid.Cid) error {
+-	ln := uint32(len(ids))
+-	if l.Len()+ln > l.limit {
+-		return errBufferOverflow
+-	}
+-
+-	if !l.front.cid.Defined() {
+-		l.front.cid = ids[0]
+-		ids = ids[1:]
+-	}
+-
+-	for _, id := range ids {
+-		if !id.Defined() {
+-			ln--
+-			continue
+-		}
+-
+-		l.front.next = &cidQueueItem{cid: id}
+-		l.front = l.front.next
+-	}
+-
+-	atomic.AddUint32(&l.len, ln)
+-	return nil
+-}
+-
+-// Dequeue removes and returns last CID from the queue.
+-// Must be called only from one goroutine.
+-func (l *cidQueue) Dequeue() cid.Cid {
+-	id := l.back.cid
+-	if id.Defined() {
+-		if l.back.next != nil {
+-			l.back = l.back.next
+-		} else {
+-			l.back.cid = cid.Undef
+-		}
+-
+-		atomic.AddUint32(&l.len, ^uint32(0))
+-	}
+-
+-	return id
+-}
+Index: blockcache.go
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- blockcache.go	(date 1593437283716)
++++ blockcache.go	(date 1593437283716)
+@@ -0,0 +1,159 @@
++package blockstream
++
++import (
++	"context"
++	"errors"
++	"sync"
++	"sync/atomic"
++
++	blocks "github.com/ipfs/go-block-format"
++	"github.com/ipfs/go-cid"
++	blockstore "github.com/ipfs/go-ipfs-blockstore"
++)
++
++const savers = 8
++
++type limitedBlockCache struct {
++	memory sync.Map
++	disk   blockstore.Blockstore
++
++	memoryUsage, memoryLimit uint64
++	autosave                 bool
++
++	ctx     context.Context
++	toSave  chan blocks.Block
++	memLock chan struct{}
++}
++
++func newLimitedBlockCache(ctx context.Context, store blockstore.Blockstore, memoryLimit uint64, autosave bool) *limitedBlockCache {
++	bc := &limitedBlockCache{
++		disk:        store,
++		memoryLimit: memoryLimit,
++		autosave:    autosave,
++		ctx:         ctx,
++		toSave:      make(chan blocks.Block, 32),
++		memLock:     make(chan struct{}, 1),
++	}
++
++	for i := 0; i < savers; i++ {
++		go bc.saver()
++	}
++	return bc
++}
++
++func (bc *limitedBlockCache) MemoryUsage() uint64 {
++	return atomic.LoadUint64(&bc.memoryUsage)
++}
++
++func (bc *limitedBlockCache) Add(b blocks.Block) {
++	bc.memory.Store(b.Cid(), b)
++	atomic.AddUint64(&bc.memoryUsage, uint64(len(b.RawData())))
++
++	select {
++	case bc.toSave <- b:
++	case <-bc.ctx.Done():
++		return
++	}
++}
++
++func (bc *limitedBlockCache) Get(id cid.Cid) blocks.Block {
++	e, _ := bc.memory.Load(id) // try getting entry from the Map
++	if e == nil {
++		b, err := bc.disk.Get(id) // if not in map, should be on a disk.
++		if err != nil && !errors.Is(err, blockstore.ErrNotFound) {
++			log.Errorf("Can't get the block: %w", err)
++		}
++
++		return b // or requested before it was added.
++	}
++	b := e.(blocks.Block)
++
++	bc.memory.Store(id, nil)                                       // remove pointer on block for GC to clean it later
++	atomic.AddUint64(&bc.memoryUsage, ^uint64(len(b.RawData())-1)) // reduce in use memory
++	return b
++}
++
++func (bc *limitedBlockCache) Has(id cid.Cid) bool {
++	_, ok := bc.memory.Load(id)
++	return ok
++}
++
++func (bc *limitedBlockCache) Close() {
++	if !bc.autosave {
++		bc.memory.Range(func(key, value interface{}) bool {
++			err := bc.disk.DeleteBlock(key.(cid.Cid))
++			if err != nil {
++				log.Errorf("Can't delete Block on closing: %w", err)
++			}
++
++			bc.memory.Delete(key)
++			return true
++		})
++	}
++}
++
++func (bc *limitedBlockCache) saver() {
++	for {
++		select {
++		case b := <-bc.toSave:
++			err := bc.disk.Put(b)
++			if err != nil {
++				log.Errorf("Can't save the block: %w", err)
++				continue
++			}
++
++			bc.freeMemory()
++		case <-bc.ctx.Done():
++			return
++		}
++	}
++}
++
++func (bc *limitedBlockCache) freeMemory() {
++	if bc.MemoryUsage() > bc.memoryLimit {
++		select {
++		case bc.memLock <- struct{}{}:
++			bc.memory.Range(func(key, value interface{}) bool {
++				need := int(bc.MemoryUsage() - bc.memoryLimit)
++				l := len(value.(blocks.Block).RawData())
++				bc.memory.Delete(key)
++				atomic.AddUint64(&bc.memoryUsage, ^uint64(l-1))
++				return l < need
++			})
++			<-bc.memLock
++		default:
++		}
++	}
++}
++
++type simpleBlockCache struct {
++	m sync.Map
++}
++
++func newSimpleBlockCache() *simpleBlockCache {
++	return &simpleBlockCache{}
++}
++
++func (s *simpleBlockCache) Add(block blocks.Block) {
++	s.m.Store(block.Cid(), block)
++}
++
++func (s *simpleBlockCache) Get(c cid.Cid) blocks.Block {
++	b, ok := s.m.Load(c)
++	if !ok {
++		return nil
++	}
++	return b.(blocks.Block)
++}
++
++func (s *simpleBlockCache) Has(c cid.Cid) bool {
++	_, ok := s.m.Load(c)
++	return ok
++}
++
++func (s *simpleBlockCache) Close() {
++	s.m.Range(func(key, value interface{}) bool {
++		s.m.Delete(key)
++		return true
++	})
++}
+Index: buffer_test.go
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>package blockstream\n\nimport (\n\t\"context\"\n\t\"crypto/rand\"\n\t\"testing\"\n\t\"time\"\n\n\tblocks \"github.com/ipfs/go-block-format\"\n\t\"github.com/ipfs/go-cid\"\n\t\"github.com/stretchr/testify/assert\"\n\t\"github.com/stretchr/testify/require\"\n)\n\nfunc TestBufferDynamic(t *testing.T) {\n\tctx, cancel := context.WithCancel(context.Background())\n\tdefer cancel()\n\n\tbuf := NewBuffer(ctx, 8, 256)\n\tdefer buf.Close()\n\n\tbs, ids := randBlocks(t, rand.Reader, 256, 256)\n\tgo func() {\n\t\terr := buf.Enqueue(ids...)\n\t\trequire.Nil(t, err, err)\n\t}()\n\n\ttmr := time.NewTimer(10 * time.Millisecond)\n\tdefer tmr.Stop()\n\n\t// Check that buffer is unbounded and blocks can be written without deadlocking.\n\tfor i := 0; i < 16; i++ {\n\t\tselect {\n\t\tcase buf.Input() <- bs[i*16 : (i+1)*16]:\n\t\t\ttmr.Reset(10 * time.Millisecond)\n\t\tcase <-tmr.C:\n\t\t\tt.Fatal(\"Buffer input is blocked.\")\n\t\t}\n\t}\n}\n\nfunc TestBufferOrder(t *testing.T) {\n\tconst (\n\t\tcount    = 256\n\t\torders   = 32\n\t\tperOrder = count / orders\n\t)\n\n\tctx, cancel := context.WithCancel(context.Background())\n\tdefer cancel()\n\n\tbstore, ids := randBlockstore(t, rand.Reader, count, 256)\n\tbuf := NewBuffer(ctx, count, count)\n\tdefer buf.Close()\n\n\tgo func() {\n\t\tfor i := 0; i < orders; i++ {\n\t\t\terr := buf.Enqueue(ids[i*perOrder : (i+1)*perOrder]...)\n\t\t\trequire.Nil(t, err, err)\n\t\t}\n\n\t\tfor i := orders - 1; i >= 0; i-- {\n\t\t\tbs := make([]blocks.Block, 0, perOrder)\n\t\t\tfor _, id := range ids[i*perOrder : (i+1)*perOrder] {\n\t\t\t\tb, _ := bstore.Get(id)\n\t\t\t\tbs = append(bs, b)\n\t\t\t}\n\n\t\t\tgo func(bs []blocks.Block) {\n\t\t\t\tbuf.Input() <- bs\n\t\t\t}(bs)\n\t\t}\n\t}()\n\n\t// check requested queue\n\tfor i := 0; i < len(ids)-1; i++ {\n\t\tb := <-buf.Output()\n\t\tassert.Equal(t, ids[i], b.Cid())\n\t}\n\tassert.Equal(t, buf.queue.Len(), uint32(0))\n}\n\nfunc TestBufferLength(t *testing.T) {\n\tctx, cancel := context.WithCancel(context.Background())\n\tdefer cancel()\n\n\tbs, _ := randBlocks(t, rand.Reader, 128, 256)\n\tbuf := NewBuffer(ctx, 128, 128)\n\n\tbuf.Input() <- bs\n\ttime.Sleep(10 * time.Microsecond) // fixes flakyness\n\tassert.Equal(t, len(bs), buf.Len())\n}\n\n// func TestBufferLimit(t *testing.T) {\n// \tconst limit = 128\n//\n// \tctx, cancel := context.WithCancel(context.Background())\n// \tdefer cancel()\n//\n// \tbs, ids := randBlocks(t, rand.Reader, 256, 256)\n// \tbuf := NewBuffer(ctx, 64, limit)\n//\n// \terr := buf.Enqueue(ids...)\n// \tassert.Equal(t, errBufferOverflow, err)\n//\n// \terr = buf.Enqueue(ids[:len(ids)/2]...)\n// \trequire.Nil(t, err, err)\n//\n// \ttmr := time.NewTimer(10 * time.Millisecond)\n// \tdefer tmr.Stop()\n//\n// \tfor i, b := range bs { // check that buffer will not grow more than a limit\n// \t\tselect {\n// \t\tcase buf.Input() <- b:\n// \t\t\ttmr.Reset(10 * time.Millisecond)\n// \t\t\tif i != len(bs)-1 {\n// \t\t\t\tcontinue\n// \t\t\t}\n// \t\tcase <-tmr.C:\n// \t\t}\n//\n// \t\tassert.Equal(t, limit, i)\n// \t\tbreak\n// \t}\n//\n// \tfor i := 0; i < limit; i++ { // check that after blocking it is possible to read the Blocks\n// \t\tb := <-buf.Output()\n// \t\tassert.Equal(t, ids[i], b.Cid())\n// \t}\n// }\n\nfunc TestBufferClosing(t *testing.T) {\n\tctx, cancel := context.WithCancel(context.Background())\n\tbs, ids := randBlocks(t, rand.Reader, 1, 256)\n\n\tt.Run(\"WithClose\", func(t *testing.T) {\n\t\tbuf := NewBuffer(ctx, 32, 32)\n\t\terr := buf.Enqueue(ids...)\n\t\trequire.Nil(t, err, err)\n\n\t\terr = buf.Close()\n\t\trequire.Nil(t, err, err)\n\n\t\tbuf.Input() <- bs\n\t\tfor b := range buf.Output() { // check that still outputs block and closes Output\n\t\t\tassert.Equal(t, bs[0], b)\n\t\t}\n\t})\n\n\tt.Run(\"WithInput\", func(t *testing.T) {\n\t\tbuf := NewBuffer(ctx, 32, 32)\n\n\t\terr := buf.Enqueue(ids...)\n\t\trequire.Nil(t, err, err)\n\n\t\tbuf.Input() <- bs\n\t\tclose(buf.Input())\n\n\t\tfor b := range buf.Output() { // check that still outputs block and closes Output\n\t\t\tassert.Equal(t, bs[0], b)\n\t\t}\n\t})\n\n\tt.Run(\"WithContext\", func(t *testing.T) {\n\t\tbuf := NewBuffer(ctx, 32, 32)\n\t\terr := buf.Enqueue(ids...)\n\t\trequire.Nil(t, err, err)\n\n\t\t// check that closing context terminates Buffer\n\t\tcancel()\n\t\t_, ok := <-buf.Output()\n\t\tassert.False(t, ok)\n\t})\n\n\tt.Run(\"Closed\", func(t *testing.T) {\n\t\tbuf := NewBuffer(ctx, 32, 32)\n\t\terr := buf.Close()\n\t\trequire.Nil(t, err, err)\n\n\t\terr = buf.Close()\n\t\tassert.Equal(t, errBufferClosed, err)\n\n\t\terr = buf.Enqueue(ids...)\n\t\tassert.Equal(t, errBufferClosed, err)\n\t})\n}\n\nfunc TestBufferCidList(t *testing.T) {\n\tbuf := newCidQueue(256)\n\t_, ids := randBlocks(t, rand.Reader, 10, 256)\n\n\tin := ids[0]\n\tbuf.Enqueue(in)\n\tout := buf.Dequeue()\n\tassert.Equal(t, in, out)\n\n\tout = buf.Dequeue()\n\tassert.Equal(t, out, cid.Undef)\n\n\t// Check that link between items is not lost after popping.\n\tbuf.Enqueue(ids...)\n\tfor _, id := range ids {\n\t\tout := buf.Dequeue()\n\t\tassert.Equal(t, id, out)\n\t}\n\n\tout = buf.Dequeue()\n\tassert.Equal(t, out, cid.Undef)\n\tassert.True(t, buf.Len() == 0)\n}\n\nfunc TestBufferRace(t *testing.T) {\n\tq := newCidQueue(256)\n\t_, ids := randBlocks(t, rand.Reader, 10, 256)\n\n\tgo func() {\n\t\tq.Enqueue(ids[0])\n\t\tq.Enqueue(ids[1])\n\t\tq.Enqueue(ids[2])\n\t}()\n\ttime.Sleep(1 * time.Second)\n\n\tq.Dequeue()\n\tq.Dequeue()\n\tassert.True(t, q.Len() == 1, q.Len())\n}\n
+===================================================================
+--- buffer_test.go	(revision 941a4aa5c13ab1b66debe77683bed72b122d6801)
++++ stream_test.go	(date 1593439168794)
+@@ -12,34 +12,7 @@
+ 	"github.com/stretchr/testify/require"
+ )
+ 
+-func TestBufferDynamic(t *testing.T) {
+-	ctx, cancel := context.WithCancel(context.Background())
+-	defer cancel()
+-
+-	buf := NewBuffer(ctx, 8, 256)
+-	defer buf.Close()
+-
+-	bs, ids := randBlocks(t, rand.Reader, 256, 256)
+-	go func() {
+-		err := buf.Enqueue(ids...)
+-		require.Nil(t, err, err)
+-	}()
+-
+-	tmr := time.NewTimer(10 * time.Millisecond)
+-	defer tmr.Stop()
+-
+-	// Check that buffer is unbounded and blocks can be written without deadlocking.
+-	for i := 0; i < 16; i++ {
+-		select {
+-		case buf.Input() <- bs[i*16 : (i+1)*16]:
+-			tmr.Reset(10 * time.Millisecond)
+-		case <-tmr.C:
+-			t.Fatal("Buffer input is blocked.")
+-		}
+-	}
+-}
+-
+-func TestBufferOrder(t *testing.T) {
++func TestBlockStreamOrder(t *testing.T) {
+ 	const (
+ 		count    = 256
+ 		orders   = 32
+@@ -50,7 +23,7 @@
+ 	defer cancel()
+ 
+ 	bstore, ids := randBlockstore(t, rand.Reader, count, 256)
+-	buf := NewBuffer(ctx, count, count)
++	buf := newBlockStream(ctx, newSimpleBlockCache(), count)
+ 	defer buf.Close()
+ 
+ 	go func() {
+@@ -80,62 +53,39 @@
+ 	assert.Equal(t, buf.queue.Len(), uint32(0))
+ }
+ 
+-func TestBufferLength(t *testing.T) {
++func TestBlockStreamUnbounded(t *testing.T) {
+ 	ctx, cancel := context.WithCancel(context.Background())
+ 	defer cancel()
+ 
+-	bs, _ := randBlocks(t, rand.Reader, 128, 256)
+-	buf := NewBuffer(ctx, 128, 128)
++	buf := newBlockStream(ctx, newSimpleBlockCache(), 256)
++	defer buf.Close()
++
++	bs, ids := randBlocks(t, rand.Reader, 256, 256)
++	go func() {
++		err := buf.Enqueue(ids...)
++		require.Nil(t, err, err)
++	}()
+ 
+-	buf.Input() <- bs
+-	time.Sleep(10 * time.Microsecond) // fixes flakyness
+-	assert.Equal(t, len(bs), buf.Len())
++	tmr := time.NewTimer(10 * time.Millisecond)
++	defer tmr.Stop()
++
++	// Check that blockStream is unbounded and blocks can be written without deadlocking.
++	for i := 0; i < 16; i++ {
++		select {
++		case buf.Input() <- bs[i*16 : (i+1)*16]:
++			tmr.Reset(10 * time.Millisecond)
++		case <-tmr.C:
++			t.Fatal("Buffer input is blocked.")
++		}
++	}
+ }
+-
+-// func TestBufferLimit(t *testing.T) {
+-// 	const limit = 128
+-//
+-// 	ctx, cancel := context.WithCancel(context.Background())
+-// 	defer cancel()
+-//
+-// 	bs, ids := randBlocks(t, rand.Reader, 256, 256)
+-// 	buf := NewBuffer(ctx, 64, limit)
+-//
+-// 	err := buf.Enqueue(ids...)
+-// 	assert.Equal(t, errBufferOverflow, err)
+-//
+-// 	err = buf.Enqueue(ids[:len(ids)/2]...)
+-// 	require.Nil(t, err, err)
+-//
+-// 	tmr := time.NewTimer(10 * time.Millisecond)
+-// 	defer tmr.Stop()
+-//
+-// 	for i, b := range bs { // check that buffer will not grow more than a limit
+-// 		select {
+-// 		case buf.Input() <- b:
+-// 			tmr.Reset(10 * time.Millisecond)
+-// 			if i != len(bs)-1 {
+-// 				continue
+-// 			}
+-// 		case <-tmr.C:
+-// 		}
+-//
+-// 		assert.Equal(t, limit, i)
+-// 		break
+-// 	}
+-//
+-// 	for i := 0; i < limit; i++ { // check that after blocking it is possible to read the Blocks
+-// 		b := <-buf.Output()
+-// 		assert.Equal(t, ids[i], b.Cid())
+-// 	}
+-// }
+ 
+-func TestBufferClosing(t *testing.T) {
++func TestBlockStreamClosing(t *testing.T) {
+ 	ctx, cancel := context.WithCancel(context.Background())
+ 	bs, ids := randBlocks(t, rand.Reader, 1, 256)
+ 
+ 	t.Run("WithClose", func(t *testing.T) {
+-		buf := NewBuffer(ctx, 32, 32)
++		buf := newBlockStream(ctx, newSimpleBlockCache(), 32)
+ 		err := buf.Enqueue(ids...)
+ 		require.Nil(t, err, err)
+ 
+@@ -149,7 +99,7 @@
+ 	})
+ 
+ 	t.Run("WithInput", func(t *testing.T) {
+-		buf := NewBuffer(ctx, 32, 32)
++		buf := newBlockStream(ctx, newSimpleBlockCache(), 32)
+ 
+ 		err := buf.Enqueue(ids...)
+ 		require.Nil(t, err, err)
+@@ -163,7 +113,7 @@
+ 	})
+ 
+ 	t.Run("WithContext", func(t *testing.T) {
+-		buf := NewBuffer(ctx, 32, 32)
++		buf := newBlockStream(ctx, newSimpleBlockCache(), 32)
+ 		err := buf.Enqueue(ids...)
+ 		require.Nil(t, err, err)
+ 
+@@ -174,7 +124,7 @@
+ 	})
+ 
+ 	t.Run("Closed", func(t *testing.T) {
+-		buf := NewBuffer(ctx, 32, 32)
++		buf := newBlockStream(ctx, newSimpleBlockCache(), 32)
+ 		err := buf.Close()
+ 		require.Nil(t, err, err)
+ 
+@@ -187,7 +137,7 @@
+ }
+ 
+ func TestBufferCidList(t *testing.T) {
+-	buf := newCidQueue(256)
++	buf := newCidQueue()
+ 	_, ids := randBlocks(t, rand.Reader, 10, 256)
+ 
+ 	in := ids[0]
+@@ -211,7 +161,7 @@
+ }
+ 
+ func TestBufferRace(t *testing.T) {
+-	q := newCidQueue(256)
++	q := newCidQueue()
+ 	_, ids := randBlocks(t, rand.Reader, 10, 256)
+ 
+ 	go func() {
+@@ -219,7 +169,7 @@
+ 		q.Enqueue(ids[1])
+ 		q.Enqueue(ids[2])
+ 	}()
+-	time.Sleep(1 * time.Second)
++	time.Sleep(100 * time.Millisecond)
+ 
+ 	q.Dequeue()
+ 	q.Dequeue()
+Index: blockstream.go
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>package blockstream\n\nimport (\n\t\"context\"\n\t\"errors\"\n\t\"sync\"\n\n\t\"github.com/Wondertan/go-libp2p-access\"\n\t\"github.com/ipfs/go-datastore\"\n\tdsync \"github.com/ipfs/go-datastore/sync\"\n\t\"github.com/ipfs/go-ipfs-blockstore\"\n\tlogging \"github.com/ipfs/go-log\"\n\t\"github.com/libp2p/go-libp2p-core/host\"\n\t\"github.com/libp2p/go-libp2p-core/network\"\n\t\"github.com/libp2p/go-libp2p-core/peer\"\n\t\"github.com/libp2p/go-libp2p-core/protocol\"\n)\n\nvar log = logging.Logger(\"blockstream\")\n\nconst Protocol protocol.ID = \"/blockstream/1.0.0\"\n\nvar errClosed = errors.New(\"blockstream: closed\")\n\nconst collectorsDefault = 8\n\ntype BlockStream struct {\n\tctx context.Context\n\n\tHost    host.Host\n\tGranter access.Granter\n\tBlocks  blockstore.Blockstore\n\n\treqs chan *request\n\n\tcollectors int\n\n\twg sync.WaitGroup\n}\n\ntype Option func(plain *BlockStream)\n\nfunc Collectors(c int) Option {\n\treturn func(bs *BlockStream) {\n\t\tbs.collectors = c\n\t}\n}\n\nfunc NewBlockStream(ctx context.Context, host host.Host, bstore blockstore.Blockstore, granter access.Granter, opts ...Option) *BlockStream {\n\tbs := &BlockStream{\n\t\tctx:        ctx,\n\t\tHost:       host,\n\t\tGranter:    granter,\n\t\tBlocks:     bstore,\n\t\treqs:       make(chan *request, 16),\n\t\tcollectors: collectorsDefault,\n\t}\n\tfor _, opt := range opts {\n\t\topt(bs)\n\t}\n\n\tfor range make([]bool, collectorsDefault) {\n\t\tnewCollector(ctx, bs.reqs, bstore, maxMsgSize, closeLog)\n\t}\n\n\thost.SetStreamHandler(Protocol, func(s network.Stream) {\n\t\terr := bs.handler(s)\n\t\tif err != nil {\n\t\t\tlog.Error(err)\n\t\t\ts.Reset()\n\t\t}\n\t})\n\treturn bs\n}\n\nfunc (bs *BlockStream) Close() error {\n\tbs.wg.Wait()\n\treturn nil\n}\n\n// TODO Define opts.\n// Session starts new BlockStream session between current node and providing 'peers' within the `token` namespace.\n// Autosave defines if received Blocks should be automatically put into Blockstore.\nfunc (bs *BlockStream) Session(ctx context.Context, token access.Token, autosave bool, peers ...peer.ID) (*Session, error) {\n\tvar store blockTracker\n\tif autosave {\n\t\tstore = bs.Blocks\n\t} else {\n\t\tstore = &fakeTracker{}\n\t}\n\n\tses := newSession(ctx, store)\n\tfor _, p := range peers {\n\t\ts, err := bs.Host.NewStream(ctx, p, Protocol)\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n\n\t\terr = giveHand(s, token)\n\t\tif err != nil {\n\t\t\ts.Reset()\n\t\t\treturn nil, err\n\t\t}\n\n\t\tses.addProvider(s, func(f func() error) {\n\t\t\tbs.wg.Add(1)\n\t\t\tdefer bs.wg.Done()\n\n\t\t\tif err := f(); err != nil {\n\t\t\t\tlog.Error(err)\n\t\t\t\ts.Reset()\n\t\t\t}\n\t\t})\n\t}\n\n\treturn ses, nil\n}\n\nfunc (bs *BlockStream) handler(s network.Stream) error {\n\tvar done chan<- error\n\t_, err := takeHand(s, func(t access.Token) (err error) {\n\t\tdone, err = bs.Granter.Granted(t, s.Conn().RemotePeer())\n\t\treturn\n\t})\n\tif err != nil {\n\t\treturn err\n\t}\n\n\tvar once sync.Once\n\tnewResponder(bs.ctx, s, bs.reqs,\n\t\tfunc(f func() error) {\n\t\t\tbs.wg.Add(1)\n\t\t\tdefer bs.wg.Done()\n\n\t\t\terr := f()\n\t\t\tif err != nil {\n\t\t\t\tlog.Error(err)\n\t\t\t}\n\n\t\t\tonce.Do(func() {\n\t\t\t\tif err != nil {\n\t\t\t\t\ts.Reset()\n\t\t\t\t\tdone <- err\n\t\t\t\t\treturn\n\t\t\t\t}\n\n\t\t\t\tclose(done)\n\t\t\t})\n\t\t},\n\t)\n\treturn nil\n}\n\ntype onToken func(access.Token) error\ntype onClose func(func() error)\n\nvar closeLog = func(f func() error) {\n\terr := f()\n\tif err != nil {\n\t\tlog.Error(err)\n\t}\n}\n\nfunc newBlockstore() blockstore.Blockstore {\n\treturn blockstore.NewBlockstore(dsync.MutexWrap(datastore.NewMapDatastore()))\n}\n
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- blockstream.go	(revision 941a4aa5c13ab1b66debe77683bed72b122d6801)
++++ blockstream.go	(date 1593440279768)
+@@ -24,6 +24,8 @@
+ 
+ const collectorsDefault = 8
+ 
++var SessionCacheMemoryLimit uint64 = 500 * 1024 * 1024
++
+ type BlockStream struct {
+ 	ctx context.Context
+ 
+@@ -82,14 +84,7 @@
+ // Session starts new BlockStream session between current node and providing 'peers' within the `token` namespace.
+ // Autosave defines if received Blocks should be automatically put into Blockstore.
+ func (bs *BlockStream) Session(ctx context.Context, token access.Token, autosave bool, peers ...peer.ID) (*Session, error) {
+-	var store blockTracker
+-	if autosave {
+-		store = bs.Blocks
+-	} else {
+-		store = &fakeTracker{}
+-	}
+-
+-	ses := newSession(ctx, store)
++	ses := newSession(ctx, newLimitedBlockCache(ctx, bs.Blocks, SessionCacheMemoryLimit, autosave))
+ 	for _, p := range peers {
+ 		s, err := bs.Host.NewStream(ctx, p, Protocol)
+ 		if err != nil {
+Index: stream.go
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- stream.go	(date 1593427904514)
++++ stream.go	(date 1593427904514)
+@@ -0,0 +1,211 @@
++package blockstream
++
++import (
++	"context"
++	"errors"
++	"sync/atomic"
++
++	blocks "github.com/ipfs/go-block-format"
++	"github.com/ipfs/go-cid"
++)
++
++var (
++	errBufferClosed = errors.New("blockstream: blockStream closed")
++)
++
++// blockCacher is cache used within streams
++type blockCacher interface {
++	Add(blocks.Block)
++	Get(cid.Cid) blocks.Block
++	Has(cid.Cid) bool
++	Close()
++}
++
++// blockStream is a dynamically sized stream of Blocks with a strict CID ordering done with linked list.
++type blockStream struct {
++	closed uint32              // atomic states of closage.
++	input  chan []blocks.Block // ingoing Blocks channel
++	output chan blocks.Block   // outgoing Blocks channel.
++	cache  blockCacher         // only accessed inside `blockStream()` routine, except for `Len()` method.
++	queue  *cidQueue           // ordered list of CIDs
++}
++
++// newBlockStream creates new ordered Block stream given size and limit.
++func newBlockStream(ctx context.Context, cache blockCacher, size int) *blockStream {
++	buf := &blockStream{
++		input:  make(chan []blocks.Block, size/4),
++		output: make(chan blocks.Block, 3*size/4),
++		cache:  cache,
++		queue:  newCidQueue(),
++	}
++	go buf.buffer(ctx)
++	return buf
++}
++
++// Input returns channel to write Blocks into with unpredictable order.
++// It is safe to write to the chan arbitrary amount of Blocks as the blockStream has dynamic cashing.
++// Might be also used to close the stream.
++func (buf *blockStream) Input() chan []blocks.Block { // TODO Change this to write only
++	return buf.input
++}
++
++// Output returns channel with Blocks ordered by the Enqueue method.
++func (buf *blockStream) Output() <-chan blocks.Block {
++	return buf.output
++}
++
++// Enqueue adds CIDs as the order for blocks to be received with the Output.
++// It is required that Enqueue is called first for Blocks' CIDs before they are actually received from the Input.
++// Must be called only from one goroutine.
++func (buf *blockStream) Enqueue(ids ...cid.Cid) error {
++	if buf.isClosed() {
++		return errBufferClosed
++	}
++
++	buf.queue.Enqueue(ids...)
++	return nil
++}
++
++// Close signals blockStream to close.
++// It may still work after to serve remaining Blocks.
++// To terminate Buffer use context.
++func (buf *blockStream) Close() error {
++	if buf.isClosed() {
++		return errBufferClosed
++	}
++
++	buf.close()
++	return nil
++}
++
++// blockStream does actual buffering magic.
++func (buf *blockStream) buffer(ctx context.Context) {
++	var (
++		pending cid.Cid           // first CID in a queue to be sent.
++		toWrite blocks.Block      // Block to be written.
++		output  chan blocks.Block // switching input and output channel to control select blocking.
++		input   = buf.input
++	)
++
++	defer func() {
++		l := buf.queue.Len()
++		if l > 0 {
++			log.Warnf("Buffer closed with %d Blocks remained enqueued, but unserved.", l)
++		}
++
++		close(buf.output)
++		buf.queue = nil // explicitly remove ref on the list for GC to clean it.
++	}()
++
++	for {
++		select {
++		case bs, ok := <-input: // on received Block:
++			if !ok { // if closed
++				buf.close() // signal closing,
++				if pending.Defined() {
++					input = nil // block the current case,
++					continue    // and continue writing.
++				}
++
++				return // or stop.
++			}
++
++			for _, b := range bs { // iterate over received blocks
++				buf.cache.Add(b)             // and cache them.
++				if b.Cid().Equals(pending) { // if it is a match,
++					toWrite, output = b, buf.output // write the Block,
++				}
++			}
++		case output <- toWrite: // on sent Block:
++			if buf.queue.Len() == 0 && buf.isClosed() { // check maybe it is time to close the stream,
++				return
++			}
++
++			output, toWrite, pending = nil, nil, cid.Undef // or block current select case and clean sent data.
++		case <-ctx.Done():
++			buf.close()
++			return
++		}
++
++		if buf.queue.Len() > 0 && !pending.Defined() { // if there is something in a queue and no pending,
++			pending = buf.queue.Dequeue() // define newer pending,
++		}
++
++		if toWrite == nil { // if we don't have the pending Block,
++			toWrite = buf.cache.Get(pending) // try to get it from the cache,
++			if toWrite != nil {              // and on success
++				output = buf.output // unblock output
++			}
++		}
++	}
++}
++
++func (buf *blockStream) isClosed() bool {
++	return atomic.LoadUint32(&buf.closed) == 1
++}
++
++func (buf *blockStream) close() {
++	atomic.CompareAndSwapUint32(&buf.closed, 0, 1)
++}
++
++// cidQueue is a lock-free linked list of CIDs that implements queue.
++type cidQueue struct {
++	len         uint32
++	back, front *cidQueueItem
++}
++
++// cidQueueItem is an element of cidQueue.
++type cidQueueItem struct {
++	cid  cid.Cid
++	next *cidQueueItem
++}
++
++// newCidQueue creates new cidQueue.
++func newCidQueue() *cidQueue {
++	itm := &cidQueueItem{}
++	return &cidQueue{back: itm, front: itm}
++}
++
++// Len returns length of the queue.
++func (l *cidQueue) Len() uint32 {
++	return atomic.LoadUint32(&l.len)
++}
++
++// Enqueue adds given CIDs to the front of the queue.
++// Must be called only from one goroutine.
++func (l *cidQueue) Enqueue(ids ...cid.Cid) {
++	ln := uint32(len(ids))
++	if !l.front.cid.Defined() {
++		l.front.cid = ids[0]
++		ids = ids[1:]
++	}
++
++	for _, id := range ids {
++		if !id.Defined() {
++			ln--
++			continue
++		}
++
++		l.front.next = &cidQueueItem{cid: id}
++		l.front = l.front.next
++	}
++
++	atomic.AddUint32(&l.len, ln)
++}
++
++// Dequeue removes and returns last CID from the queue.
++// Must be called only from one goroutine.
++func (l *cidQueue) Dequeue() cid.Cid {
++	id := l.back.cid
++	if id.Defined() {
++		if l.back.next != nil {
++			l.back = l.back.next
++		} else {
++			l.back.cid = cid.Undef
++		}
++
++		atomic.AddUint32(&l.len, ^uint32(0))
++	}
++
++	return id
++}
+Index: requester.go
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>package blockstream\n\nimport (\n\t\"context\"\n\t\"errors\"\n\t\"fmt\"\n\t\"io\"\n\n\t\"github.com/ipfs/go-block-format\"\n)\n\n// blockPutter is an interface responsible for saving blocks.\ntype blockPutter interface {\n\tPutMany([]blocks.Block) error\n}\n\n// requester is responsible for requesting block from a remote peer.\n// It has to be paired with a responder on the other side of a conversation.\ntype requester struct {\n\trwc io.ReadWriteCloser\n\tput blockPutter\n\n\tnew, cncl chan *request\n\trq        *requestQueue\n\n\tctx    context.Context\n\tcancel context.CancelFunc\n}\n\n// newRequester creates new requester.\nfunc newRequester(ctx context.Context, rwc io.ReadWriteCloser, reqs chan *request, put blockPutter, onErr onClose) *requester {\n\tctx, cancel := context.WithCancel(ctx)\n\trcv := &requester{\n\t\trwc:    rwc,\n\t\tput:    put,\n\t\tnew:    reqs,\n\t\tcncl:   make(chan *request),\n\t\trq:     newRequestQueue(ctx.Done()),\n\t\tctx:    ctx,\n\t\tcancel: cancel,\n\t}\n\tgo onErr(rcv.writeLoop)\n\tgo onErr(rcv.readLoop)\n\treturn rcv\n}\n\n// writeLoop is a long running method which asynchronously handles requests, sends them to remote responder and queues up\n// for future read by readLoop. It also handles request canceling, as well as request recovering in case stream is dead.\nfunc (r *requester) writeLoop() error {\n\tdefer r.cancel()\n\tfor {\n\t\tselect {\n\t\tcase req := <-r.new:\n\t\t\terr := writeBlocksReq(r.rwc, req.Id(), req.Remains())\n\t\t\tif err != nil {\n\t\t\t\tselect {\n\t\t\t\tcase r.new <- req:\n\t\t\t\tcase <-req.Done():\n\t\t\t\tcase <-r.ctx.Done():\n\t\t\t\t}\n\n\t\t\t\treturn fmt.Errorf(\"can't writeLoop request(%d): %w\", req.id, err)\n\t\t\t}\n\n\t\t\tgo r.onCancel(req)\n\t\t\tr.rq.Enqueue(req)\n\t\tcase req := <-r.cncl:\n\t\t\terr := writeBlocksReq(r.rwc, req.Id(), nil)\n\t\t\tif err != nil {\n\t\t\t\treturn fmt.Errorf(\"can't cancel request(%d): %w\", req.id, err)\n\t\t\t}\n\t\tcase <-r.ctx.Done():\n\t\t\treturn r.rwc.Close()\n\t\t}\n\t}\n}\n\n// readLoop is a long running method which receives requested blocks from the remote responder and fulfills queued request.\nfunc (r *requester) readLoop() error {\n\tfor {\n\t\tid, data, err := readBlocksResp(r.rwc)\n\t\tif err != nil {\n\t\t\tif errors.Is(err, io.EOF) {\n\t\t\t\treturn nil\n\t\t\t}\n\n\t\t\treturn err\n\t\t}\n\n\t\treq := r.rq.Back()\n\t\tif req == nil {\n\t\t\t_, err := r.rwc.Read([]byte{0})\n\t\t\tif errors.Is(err, io.EOF) {\n\t\t\t\treturn nil\n\t\t\t}\n\n\t\t\treturn err\n\t\t}\n\n\t\tif req.Id() != id {\n\t\t\tlog.Warnf(\"Received Blocks for wrong request(%d), skipping...\", id)\n\t\t\tcontinue\n\t\t}\n\n\t\tids := req.Remains()\n\t\tbs := make([]blocks.Block, len(data))\n\t\tfor i, b := range data {\n\t\t\tbs[i], err = newBlockCheckCid(b, ids[i])\n\t\t\tif err != nil {\n\t\t\t\tif errors.Is(err, blocks.ErrWrongHash) {\n\t\t\t\t\tlog.Errorf(\"%s: expected: %s, received: %s\", err, ids[i], bs[i])\n\t\t\t\t}\n\n\t\t\t\treturn err\n\t\t\t}\n\t\t}\n\n\t\terr = r.put.PutMany(bs)\n\t\tif err != nil {\n\t\t\treturn err\n\t\t}\n\n\t\tif !req.Fill(bs) {\n\t\t\tr.rq.PopBack()\n\t\t}\n\t}\n}\n\n// onCancel handles request cancellation.\nfunc (r *requester) onCancel(req *request) {\n\tselect {\n\tcase <-req.Done():\n\t\tif !req.Fulfilled() {\n\t\t\tselect {\n\t\t\tcase r.cncl <- req:\n\t\t\tcase <-r.ctx.Done():\n\t\t\t}\n\t\t}\n\tcase <-r.ctx.Done():\n\t}\n}\n
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- requester.go	(revision 941a4aa5c13ab1b66debe77683bed72b122d6801)
++++ requester.go	(date 1593330904159)
+@@ -9,16 +9,10 @@
+ 	"github.com/ipfs/go-block-format"
+ )
+ 
+-// blockPutter is an interface responsible for saving blocks.
+-type blockPutter interface {
+-	PutMany([]blocks.Block) error
+-}
+-
+ // requester is responsible for requesting block from a remote peer.
+ // It has to be paired with a responder on the other side of a conversation.
+ type requester struct {
+ 	rwc io.ReadWriteCloser
+-	put blockPutter
+ 
+ 	new, cncl chan *request
+ 	rq        *requestQueue
+@@ -28,11 +22,10 @@
+ }
+ 
+ // newRequester creates new requester.
+-func newRequester(ctx context.Context, rwc io.ReadWriteCloser, reqs chan *request, put blockPutter, onErr onClose) *requester {
++func newRequester(ctx context.Context, rwc io.ReadWriteCloser, reqs chan *request, onErr onClose) *requester {
+ 	ctx, cancel := context.WithCancel(ctx)
+ 	rcv := &requester{
+ 		rwc:    rwc,
+-		put:    put,
+ 		new:    reqs,
+ 		cncl:   make(chan *request),
+ 		rq:     newRequestQueue(ctx.Done()),
+@@ -114,11 +107,6 @@
+ 				return err
+ 			}
+ 		}
+-
+-		err = r.put.PutMany(bs)
+-		if err != nil {
+-			return err
+-		}
+ 
+ 		if !req.Fill(bs) {
+ 			r.rq.PopBack()
+Index: session.go
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>package blockstream\n\nimport (\n\t\"context\"\n\t\"io\"\n\t\"sync/atomic\"\n\n\t\"github.com/ipfs/go-block-format\"\n\t\"github.com/ipfs/go-cid\"\n)\n\nvar (\n\tStreamBufferSize  = 128\n\tStreamBufferLimit = 4096\n)\n\nconst requestBufferSize = 8\n\n// blockTracker tracks blocks within the session\ntype blockTracker interface {\n\tblockPutter\n\tblockGetter\n}\n\ntype Session struct {\n\treqN, prvs uint32\n\n\treqs chan *request\n\ttrk  blockTracker\n\n\tctx context.Context\n}\n\nfunc newSession(ctx context.Context, trk blockTracker) *Session {\n\treturn &Session{\n\t\treqs: make(chan *request, requestBufferSize),\n\t\ttrk:  trk,\n\t\tctx:  ctx,\n\t}\n}\n\n// Stream starts direct BBlock fetching from remote providers. It fetches the Blocks requested with 'in' chan by their ids.\n// Stream is automatically stopped when both: the requested blocks are all fetched and 'in' chan is closed.\n// It might be also terminated with the provided context.\n// Block order is guaranteed to be the same as requested through the `in` chan.\nfunc (ses *Session) Stream(ctx context.Context, in <-chan []cid.Cid) <-chan blocks.Block {\n\tctx, cancel := context.WithCancel(ctx)\n\tbuf := NewBuffer(ctx, StreamBufferSize, StreamBufferLimit)\n\tgo func() {\n\t\tdefer buf.Close()\n\t\tfor {\n\t\t\tselect {\n\t\t\tcase ids, ok := <-in:\n\t\t\t\tif !ok {\n\t\t\t\t\treturn\n\t\t\t\t}\n\n\t\t\t\terr := buf.Enqueue(ids...)\n\t\t\t\tif err != nil {\n\t\t\t\t\tlog.Error(err)\n\t\t\t\t\treturn\n\t\t\t\t}\n\n\t\t\t\terr = ses.request(ctx, ids, buf.Input())\n\t\t\t\tif err != nil {\n\t\t\t\t\treturn\n\t\t\t\t}\n\t\t\tcase <-ses.ctx.Done():\n\t\t\t\tcancel()\n\t\t\t\treturn\n\t\t\tcase <-ctx.Done():\n\t\t\t\treturn\n\t\t\t}\n\t\t}\n\t}()\n\n\treturn buf.Output()\n}\n\n// Blocks fetches Blocks by their CIDs evenly from the remote providers in the session.\n// Block order is guaranteed to be the same as requested.\nfunc (ses *Session) Blocks(ctx context.Context, ids []cid.Cid) (<-chan blocks.Block, error) {\n\tctx, cancel := context.WithCancel(ctx)\n\tgo func() {\n\t\tselect {\n\t\tcase <-ses.ctx.Done(): // not to leak Buffer in case session context is closed\n\t\t\tcancel()\n\t\tcase <-ctx.Done():\n\t\t}\n\t}()\n\n\tbuf := NewBuffer(ctx, len(ids), len(ids))\n\terr := buf.Enqueue(ids...)\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\terr = ses.request(ctx, ids, buf.Input())\n\tif err != nil {\n\t\treturn nil, err\n\t}\n\n\treturn buf.Output(), buf.Close()\n}\n\n// request requests providers in the session for Blocks and writes them out to the chan.\nfunc (ses *Session) request(ctx context.Context, in []cid.Cid, out chan []blocks.Block) error {\n\tin, err := ses.tracked(ctx, in, out)\n\tif len(in) == 0 || err != nil {\n\t\treturn err\n\t}\n\n\tsets := ses.distribute(in)\n\treqs := make([]*request, len(sets))\n\tfor i, set := range sets {\n\t\treqs[i] = newRequestWithChan(ctx, ses.requestId(), set, out)\n\t}\n\n\tfor _, req := range reqs {\n\t\tselect {\n\t\tcase ses.reqs <- req:\n\t\tcase <-ses.ctx.Done():\n\t\t\treturn ses.ctx.Err()\n\t\tcase <-ctx.Done():\n\t\t\treturn ctx.Err()\n\t\t}\n\t}\n\n\treturn nil\n}\n\n// distribute splits ids between providers to download from multiple sources.\nfunc (ses *Session) distribute(ids []cid.Cid) [][]cid.Cid {\n\tl := int(atomic.LoadUint32(&ses.prvs))\n\tsets := make([][]cid.Cid, l)\n\tfor i, k := range ids {\n\t\tsets[i%l] = append(sets[i%l], k)\n\t}\n\n\treturn sets\n}\n\n// tracked sends known Blocks to the chan and returns ids remained to be fetched.\nfunc (ses *Session) tracked(ctx context.Context, in []cid.Cid, out chan<- []blocks.Block) ([]cid.Cid, error) {\n\tvar hv, dhv []cid.Cid // need to make a copy\n\tfor _, id := range in {\n\t\tif !id.Defined() {\n\t\t\tcontinue\n\t\t}\n\n\t\tok, err := ses.trk.Has(id)\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n\n\t\tif ok {\n\t\t\thv = append(hv, id)\n\t\t} else {\n\t\t\tdhv = append(dhv, id)\n\t\t}\n\t}\n\n\tif len(hv) == 0 {\n\t\treturn dhv, nil\n\t}\n\n\tgo func() {\n\t\tbs := make([]blocks.Block, 0, len(hv))\n\t\tfor i, id := range hv {\n\t\t\tb, err := ses.trk.Get(id)\n\t\t\tif err != nil {\n\t\t\t\tlog.Errorf(\"Can't get tracked block: %s\", err)\n\t\t\t\tcontinue\n\t\t\t}\n\n\t\t\tbs[i] = b\n\t\t}\n\n\t\tselect {\n\t\tcase out <- bs:\n\t\tcase <-ctx.Done():\n\t\t\treturn\n\t\tcase <-ses.ctx.Done():\n\t\t\treturn\n\t\t}\n\t}()\n\n\treturn dhv, nil\n}\n\nfunc (ses *Session) addProvider(rwc io.ReadWriteCloser, closing onClose) {\n\tnewRequester(ses.ctx, rwc, ses.reqs, ses.trk, closing)\n\tatomic.AddUint32(&ses.prvs, 1)\n}\n\nfunc (ses *Session) removeProvider() {\n\tatomic.AddUint32(&ses.prvs, ^uint32(0))\n}\n\nfunc (ses *Session) requestId() uint32 {\n\treturn atomic.AddUint32(&ses.reqN, 1)\n}\n
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- session.go	(revision 941a4aa5c13ab1b66debe77683bed72b122d6801)
++++ session.go	(date 1593428281487)
+@@ -11,31 +11,29 @@
+ 
+ var (
+ 	StreamBufferSize  = 128
+-	StreamBufferLimit = 4096
+ )
+ 
+ const requestBufferSize = 8
+ 
+ // blockTracker tracks blocks within the session
+ type blockTracker interface {
+-	blockPutter
+ 	blockGetter
+ }
+ 
+ type Session struct {
+ 	reqN, prvs uint32
+ 
+-	reqs chan *request
+-	trk  blockTracker
++	reqs  chan *request
++	cache blockCacher
+ 
+ 	ctx context.Context
+ }
+ 
+-func newSession(ctx context.Context, trk blockTracker) *Session {
++func newSession(ctx context.Context, cache blockCacher) *Session {
+ 	return &Session{
+-		reqs: make(chan *request, requestBufferSize),
+-		trk:  trk,
+-		ctx:  ctx,
++		reqs:  make(chan *request, requestBufferSize),
++		cache: cache,
++		ctx:   ctx,
+ 	}
+ }
+ 
+@@ -45,7 +43,7 @@
+ // Block order is guaranteed to be the same as requested through the `in` chan.
+ func (ses *Session) Stream(ctx context.Context, in <-chan []cid.Cid) <-chan blocks.Block {
+ 	ctx, cancel := context.WithCancel(ctx)
+-	buf := NewBuffer(ctx, StreamBufferSize, StreamBufferLimit)
++	buf := newBlockStream(ctx, ses.cache, StreamBufferSize)
+ 	go func() {
+ 		defer buf.Close()
+ 		for {
+@@ -57,7 +55,6 @@
+ 
+ 				err := buf.Enqueue(ids...)
+ 				if err != nil {
+-					log.Error(err)
+ 					return
+ 				}
+ 
+@@ -89,7 +86,7 @@
+ 		}
+ 	}()
+ 
+-	buf := NewBuffer(ctx, len(ids), len(ids))
++	buf := newBlockStream(ctx, ses.cache, len(ids))
+ 	err := buf.Enqueue(ids...)
+ 	if err != nil {
+ 		return nil, err
+@@ -105,9 +102,9 @@
+ 
+ // request requests providers in the session for Blocks and writes them out to the chan.
+ func (ses *Session) request(ctx context.Context, in []cid.Cid, out chan []blocks.Block) error {
+-	in, err := ses.tracked(ctx, in, out)
+-	if len(in) == 0 || err != nil {
+-		return err
++	in = ses.cached(in)
++	if len(in) == 0 {
++		return nil
+ 	}
+ 
+ 	sets := ses.distribute(in)
+@@ -140,56 +137,24 @@
+ 	return sets
+ }
+ 
+-// tracked sends known Blocks to the chan and returns ids remained to be fetched.
+-func (ses *Session) tracked(ctx context.Context, in []cid.Cid, out chan<- []blocks.Block) ([]cid.Cid, error) {
+-	var hv, dhv []cid.Cid // need to make a copy
++// cached checks known Blocks and returns ids remained to be fetched.
++func (ses *Session) cached(in []cid.Cid) []cid.Cid {
++	var out []cid.Cid // need to make a copy
+ 	for _, id := range in {
+ 		if !id.Defined() {
+ 			continue
+ 		}
+ 
+-		ok, err := ses.trk.Has(id)
+-		if err != nil {
+-			return nil, err
+-		}
+-
+-		if ok {
+-			hv = append(hv, id)
+-		} else {
+-			dhv = append(dhv, id)
+-		}
+-	}
+-
+-	if len(hv) == 0 {
+-		return dhv, nil
+-	}
+-
+-	go func() {
+-		bs := make([]blocks.Block, 0, len(hv))
+-		for i, id := range hv {
+-			b, err := ses.trk.Get(id)
+-			if err != nil {
+-				log.Errorf("Can't get tracked block: %s", err)
+-				continue
+-			}
+-
+-			bs[i] = b
++		if !ses.cache.Has(id) {
++			out = append(out, id)
+ 		}
+-
+-		select {
+-		case out <- bs:
+-		case <-ctx.Done():
+-			return
+-		case <-ses.ctx.Done():
+-			return
+-		}
+-	}()
++	}
+ 
+-	return dhv, nil
++	return out
+ }
+ 
+ func (ses *Session) addProvider(rwc io.ReadWriteCloser, closing onClose) {
+-	newRequester(ses.ctx, rwc, ses.reqs, ses.trk, closing)
++	newRequester(ses.ctx, rwc, ses.reqs, closing)
+ 	atomic.AddUint32(&ses.prvs, 1)
+ }
+ 
+Index: testing.go
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>package blockstream\n\nimport (\n\t\"context\"\n\t\"io\"\n\t\"testing\"\n\n\taccess \"github.com/Wondertan/go-libp2p-access\"\n\t\"github.com/ipfs/go-block-format\"\n\t\"github.com/ipfs/go-cid\"\n\t\"github.com/ipfs/go-ipfs-blockstore\"\n\tmocknet \"github.com/libp2p/go-libp2p/p2p/net/mock\"\n\t\"github.com/stretchr/testify/assert\"\n\t\"github.com/stretchr/testify/require\"\n)\n\nfunc MockNet(t *testing.T, ctx context.Context, count int) []*BlockStream {\n\tnet, err := mocknet.FullMeshConnected(ctx, count)\n\trequire.Nil(t, err, err)\n\ths := net.Hosts()\n\n\tnodes := make([]*BlockStream, count)\n\tfor i, h := range hs {\n\t\tnodes[i] = NewBlockStream(ctx, h, nil, access.NewPassingGranter())\n\t}\n\n\treturn nodes\n}\n\nfunc randBlockstore(t *testing.T, rand io.Reader, count, size int) (blockstore.Blockstore, []cid.Cid) {\n\tbstore := newBlockstore()\n\tbs, ids := randBlocks(t, rand, count, size)\n\tfor _, b := range bs {\n\t\terr := bstore.Put(b)\n\t\tif err != nil {\n\t\t\tt.Fatal(err)\n\t\t}\n\t}\n\n\treturn bstore, ids\n}\n\nfunc randBlocks(t *testing.T, rand io.Reader, count, size int) ([]blocks.Block, []cid.Cid) {\n\tbs := make([]blocks.Block, count)\n\tids := make([]cid.Cid, count)\n\tfor i := 0; i < count; i++ {\n\t\tb := make([]byte, size)\n\t\t_, err := rand.Read(b)\n\t\tif err != nil {\n\t\t\tt.Fatal(err)\n\t\t}\n\n\t\tbs[i] = blocks.NewBlock(b)\n\t\tids[i] = bs[i].Cid()\n\t}\n\n\treturn bs, ids\n}\n\nfunc assertChan(t *testing.T, ch <-chan blocks.Block, ids []cid.Cid, expected int) {\n\tvar actual int\n\tfor _, id := range ids {\n\t\tb := <-ch\n\t\tassert.Equal(t, id, b.Cid())\n\t\tactual++\n\t}\n\tassert.Equal(t, expected, actual)\n}\n\nfunc assertBlockReq(t *testing.T, r io.Reader, in uint32, ids []cid.Cid) {\n\tid, out, err := readBlocksReq(r)\n\trequire.Nil(t, err, err)\n\tassert.Equal(t, ids, out)\n\tassert.Equal(t, in, id)\n}\n\nfunc assertBlockReqCancel(t *testing.T, r io.Reader, in uint32) {\n\tid, out, err := readBlocksReq(r)\n\trequire.Nil(t, err, err)\n\tassert.Len(t, out, 0)\n\tassert.Equal(t, in, id)\n}\n\nfunc assertBlockResp(t *testing.T, r io.Reader, in uint32, ids []cid.Cid) {\n\tid, out, err := readBlocksResp(r)\n\trequire.Nil(t, err, err)\n\tassert.Equal(t, in, id)\n\tfor i, b := range out {\n\t\t_, err = newBlockCheckCid(b, ids[i])\n\t\trequire.Nil(t, err, err)\n\t}\n}\n\nfunc newRequestPair(ctx context.Context, in, out chan *request) {\n\ts1, s2 := streamPair()\n\tnewRequester(ctx, s1, in, &fakeTracker{}, closeLog)\n\tnewResponder(ctx, s2, out, closeLog)\n}\n\nfunc newTestResponder(t *testing.T, ctx context.Context, reqs chan *request) io.ReadWriter {\n\ts1, s2 := streamPair()\n\tnewResponder(ctx, s2, reqs, closeLog)\n\treturn s1\n}\n\nfunc newTestRequester(t *testing.T, ctx context.Context, reqs chan *request, put blockPutter) io.ReadWriter {\n\ts1, s2 := streamPair()\n\tnewRequester(ctx, s2, reqs, put, closeLog)\n\treturn s1\n}\n\ntype fakeStream struct {\n\tread  *io.PipeReader\n\twrite *io.PipeWriter\n}\n\nfunc streamPair() (*fakeStream, *fakeStream) {\n\tr1, w1 := io.Pipe()\n\tr2, w2 := io.Pipe()\n\treturn &fakeStream{r1, w2}, &fakeStream{r2, w1}\n}\n\nfunc (s *fakeStream) Read(b []byte) (n int, err error) {\n\treturn s.read.Read(b)\n}\n\nfunc (s *fakeStream) Write(b []byte) (n int, err error) {\n\treturn s.write.Write(b)\n}\n\nfunc (s *fakeStream) Close() error {\n\treturn s.write.Close()\n}\n\ntype fakeTracker struct{}\n\nfunc (t fakeTracker) Has(cid.Cid) (bool, error) { return false, nil }\n\nfunc (fakeTracker) PutMany([]blocks.Block) error { return nil }\n\nfunc (fakeTracker) GetSize(cid.Cid) (int, error) { return 0, nil }\n\nfunc (fakeTracker) Get(cid.Cid) (blocks.Block, error) { return nil, blockstore.ErrNotFound }\n
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- testing.go	(revision 941a4aa5c13ab1b66debe77683bed72b122d6801)
++++ testing.go	(date 1593439437027)
+@@ -93,7 +93,7 @@
+ 
+ func newRequestPair(ctx context.Context, in, out chan *request) {
+ 	s1, s2 := streamPair()
+-	newRequester(ctx, s1, in, &fakeTracker{}, closeLog)
++	newRequester(ctx, s1, in, closeLog)
+ 	newResponder(ctx, s2, out, closeLog)
+ }
+ 
+@@ -103,9 +103,9 @@
+ 	return s1
+ }
+ 
+-func newTestRequester(t *testing.T, ctx context.Context, reqs chan *request, put blockPutter) io.ReadWriter {
++func newTestRequester(t *testing.T, ctx context.Context, reqs chan *request) io.ReadWriter {
+ 	s1, s2 := streamPair()
+-	newRequester(ctx, s2, reqs, put, closeLog)
++	newRequester(ctx, s2, reqs, closeLog)
+ 	return s1
+ }
+ 
+Index: session_test.go
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>package blockstream\n\nimport (\n\t\"context\"\n\t\"crypto/rand\"\n\t\"testing\"\n\n\tblocks \"github.com/ipfs/go-block-format\"\n\t\"github.com/ipfs/go-cid\"\n\tblockstore \"github.com/ipfs/go-ipfs-blockstore\"\n\t\"github.com/stretchr/testify/assert\"\n\t\"github.com/stretchr/testify/require\"\n)\n\nfunc TestRequestResponder(t *testing.T) {\n\tctx, cancel := context.WithCancel(context.Background())\n\tdefer cancel()\n\n\tbs, ids := randBlocks(t, rand.Reader, 8, 256)\n\n\tin, out := make(chan *request, 4), make(chan *request, 4)\n\tnewRequestPair(ctx, in, out)\n\n\treqIn := newRequest(ctx, 0, ids)\n\tin <- reqIn\n\n\treqOut := <-out\n\tfor _, b := range bs {\n\t\treqOut.Fill([]blocks.Block{b})\n\t}\n\n\tfor _, b := range bs {\n\t\tbs, _ := reqIn.Next()\n\t\tassert.Equal(t, b, bs[0])\n\t}\n}\n\nfunc TestSessionStream(t *testing.T) {\n\tconst (\n\t\tcount   = 512\n\t\ttimes   = 8\n\t\tsize    = 64\n\t\tmsgSize = 256\n\t)\n\n\tctx, cancel := context.WithCancel(context.Background())\n\tdefer cancel()\n\n\tbstore, ids := randBlockstore(t, rand.Reader, count, size)\n\n\tses := newSession(ctx, &fakeTracker{})\n\taddProvider(ctx, ses, bstore, msgSize)\n\taddProvider(ctx, ses, bstore, msgSize)\n\taddProvider(ctx, ses, bstore, msgSize)\n\n\tin := make(chan []cid.Cid, 2)\n\tgo func() {\n\t\tfor i := 0; i < times; i++ {\n\t\t\tin <- ids[i*count/times : (i+1)*count/times]\n\t\t}\n\t\tclose(in)\n\t}()\n\n\tout := ses.Stream(ctx, in)\n\tfor i := 0; i < times; i++ {\n\t\tassertChan(t, out, ids[i*count/times:(i+1)*count/times], count/times)\n\t}\n}\n\nfunc TestSessionBlocks(t *testing.T) {\n\tconst (\n\t\tcount   = 130\n\t\tsize    = 64\n\t\tmsgSize = 256\n\t)\n\n\tctx, cancel := context.WithCancel(context.Background())\n\tdefer cancel()\n\n\tbstore, ids := randBlockstore(t, rand.Reader, count, size)\n\n\tses := newSession(ctx, &fakeTracker{})\n\taddProvider(ctx, ses, bstore, msgSize)\n\taddProvider(ctx, ses, bstore, msgSize)\n\taddProvider(ctx, ses, bstore, msgSize)\n\n\tch1, err := ses.Blocks(ctx, ids[:count/2])\n\trequire.Nil(t, err, err)\n\n\tch2, err := ses.Blocks(ctx, ids[count/2:])\n\trequire.Nil(t, err, err)\n\n\tassertChan(t, ch1, ids[:count/2], count/2)\n\tassertChan(t, ch2, ids[count/2:], count/2)\n}\n\nfunc addProvider(ctx context.Context, ses *Session, bstore blockstore.Blockstore, msgSize int) {\n\treqs := make(chan *request, 8)\n\ts1, s2 := streamPair()\n\tnewResponder(ctx, s2, reqs, closeLog)\n\tnewCollector(ctx, reqs, bstore, msgSize, closeLog)\n\tses.addProvider(s1, closeLog)\n}\n
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- session_test.go	(revision 941a4aa5c13ab1b66debe77683bed72b122d6801)
++++ session_test.go	(date 1593440268981)
+@@ -48,7 +48,7 @@
+ 
+ 	bstore, ids := randBlockstore(t, rand.Reader, count, size)
+ 
+-	ses := newSession(ctx, &fakeTracker{})
++	ses := newSession(ctx, newSimpleBlockCache())
+ 	addProvider(ctx, ses, bstore, msgSize)
+ 	addProvider(ctx, ses, bstore, msgSize)
+ 	addProvider(ctx, ses, bstore, msgSize)
+@@ -79,7 +79,7 @@
+ 
+ 	bstore, ids := randBlockstore(t, rand.Reader, count, size)
+ 
+-	ses := newSession(ctx, &fakeTracker{})
++	ses := newSession(ctx, newSimpleBlockCache())
+ 	addProvider(ctx, ses, bstore, msgSize)
+ 	addProvider(ctx, ses, bstore, msgSize)
+ 	addProvider(ctx, ses, bstore, msgSize)
+Index: blockcache_test.go
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- blockcache_test.go	(date 1593436876975)
++++ blockcache_test.go	(date 1593436876975)
+@@ -0,0 +1,41 @@
++package blockstream
++
++import (
++	"context"
++	"crypto/rand"
++	"testing"
++	"time"
++
++	"github.com/stretchr/testify/assert"
++)
++
++func TestBlockCache(t *testing.T) {
++	const limit = uint64(2048)
++
++	ctx, cancel := context.WithCancel(context.Background())
++	defer cancel()
++
++	bs := newBlockstore()
++	bc := newLimitedBlockCache(ctx, bs, limit, false)
++
++	bls, ids := randBlocks(t, rand.Reader, 32, 128)
++	for _, b := range bls {
++		bc.Add(b)
++	}
++	assert.LessOrEqual(t, limit, bc.MemoryUsage())
++
++	time.Sleep(time.Millisecond)
++	assert.Equal(t, limit, bc.MemoryUsage())
++
++	for _, id := range ids {
++		b := bc.Get(id)
++		assert.NotNil(t, b)
++	}
++	assert.Equal(t, uint64(0), bc.MemoryUsage())
++
++	bc.Close()
++	bc.memory.Range(func(key, value interface{}) bool {
++		t.Error("not empty")
++		return false
++	})
++}
+Index: requester_test.go
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.BaseRevisionTextPatchEP
+<+>package blockstream\n\nimport (\n\t\"context\"\n\t\"crypto/rand\"\n\t\"testing\"\n\n\t\"github.com/stretchr/testify/assert\"\n\t\"github.com/stretchr/testify/require\"\n)\n\nfunc TestRequester(t *testing.T) {\n\tconst (\n\t\tcount = 32\n\t\tsize  = 32\n\t)\n\n\tctx, cancel := context.WithCancel(context.Background())\n\tdefer cancel()\n\n\tbs, in := randBlocks(t, rand.Reader, count, size)\n\n\treqs := make(chan *request, 1)\n\ts := newTestRequester(t, ctx, reqs, &fakeTracker{})\n\n\treq := newRequest(ctx, 0, in)\n\treqs <- req\n\tassertBlockReq(t, s, 0, in)\n\n\terr := writeBlocksResp(s, 0, bs)\n\trequire.Nil(t, err, err)\n\n\tout, _ := req.Next()\n\tassert.Equal(t, bs, out)\n}\n\nfunc TestRequesterCancel(t *testing.T) {\n\tconst (\n\t\tcount = 32\n\t\tsize  = 32\n\t)\n\n\tctx, cancel := context.WithCancel(context.Background())\n\tdefer cancel()\n\n\treqs := make(chan *request, 1)\n\ts := newTestRequester(t, ctx, reqs, &fakeTracker{})\n\n\tbs, in := randBlocks(t, rand.Reader, count, size)\n\n\treq := newRequest(ctx, 1, in)\n\treqs <- req\n\treq.Cancel()\n\n\tassertBlockReq(t, s, 1, in)\n\tassertBlockReqCancel(t, s, 1)\n\n\terr := writeBlocksResp(s, 1, bs)\n\trequire.Nil(t, err, err)\n\n\tbs, ok := req.Next()\n\tassert.Nil(t, bs)\n\tassert.False(t, ok)\n}\n
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+--- requester_test.go	(revision 941a4aa5c13ab1b66debe77683bed72b122d6801)
++++ requester_test.go	(date 1593330904147)
+@@ -21,7 +21,7 @@
+ 	bs, in := randBlocks(t, rand.Reader, count, size)
+ 
+ 	reqs := make(chan *request, 1)
+-	s := newTestRequester(t, ctx, reqs, &fakeTracker{})
++	s := newTestRequester(t, ctx, reqs)
+ 
+ 	req := newRequest(ctx, 0, in)
+ 	reqs <- req
+@@ -44,7 +44,7 @@
+ 	defer cancel()
+ 
+ 	reqs := make(chan *request, 1)
+-	s := newTestRequester(t, ctx, reqs, &fakeTracker{})
++	s := newTestRequester(t, ctx, reqs)
+ 
+ 	bs, in := randBlocks(t, rand.Reader, count, size)
+ 

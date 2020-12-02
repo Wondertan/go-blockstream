@@ -6,6 +6,7 @@ import (
 	"io"
 
 	"github.com/Wondertan/go-blockstream/block"
+	"github.com/Wondertan/go-blockstream/blocknet"
 )
 
 // responder is responsible for responding to block requests from a remote peer.
@@ -13,7 +14,7 @@ import (
 type responder struct {
 	rwc io.ReadWriteCloser
 
-	reqs chan *block.Request
+	reqs chan *block.RequestGroup
 	rq   *block.RequestQueue
 
 	ctx    context.Context
@@ -21,7 +22,7 @@ type responder struct {
 }
 
 // newResponder creates new responder.
-func newResponder(ctx context.Context, rwc io.ReadWriteCloser, reqs chan *block.Request, onErr сlose) *responder {
+func newResponder(ctx context.Context, rwc io.ReadWriteCloser, reqs chan *block.RequestGroup, onErr сlose) *responder {
 	ctx, cancel := context.WithCancel(ctx)
 	snr := &responder{
 		rwc:    rwc,
@@ -40,7 +41,7 @@ func newResponder(ctx context.Context, rwc io.ReadWriteCloser, reqs chan *block.
 func (r *responder) readLoop() error {
 	defer r.cancel()
 	for {
-		id, ids, err := readBlocksReq(r.rwc)
+		id, ids, err := blocknet.readBlocksReq(r.rwc)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				return nil
@@ -55,7 +56,11 @@ func (r *responder) readLoop() error {
 		}
 
 		// TODO Add limiting for both queues to exclude DOS vector, if it is reached - reset the stream
-		req := block.NewRequest(r.ctx, id, ids)
+		req, err := block.NewRequestGroup(r.ctx, id, ids)
+		if err != nil {
+			return err
+		}
+
 		r.rq.Enqueue(req)
 		select {
 		case r.reqs <- req:
@@ -79,7 +84,7 @@ func (r *responder) writeLoop() error {
 				break
 			}
 
-			err := writeBlocksResp(r.rwc, req.Id(), bs, reqErr)
+			err := blocknet.writeBlocksResp(r.rwc, req.Id(), bs, reqErr)
 			if err != nil {
 				return err
 			}

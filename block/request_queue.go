@@ -26,7 +26,7 @@ func (rq *RequestQueue) Len() int {
 	return rq.l.Len()
 }
 
-func (rq *RequestQueue) Enqueue(reqs ...*Request) {
+func (rq *RequestQueue) Enqueue(reqs ...Request) {
 	rq.m.Lock()
 	defer rq.m.Unlock()
 
@@ -36,20 +36,30 @@ func (rq *RequestQueue) Enqueue(reqs ...*Request) {
 	rq.signal()
 }
 
-func (rq *RequestQueue) Back() *Request {
+func (rq *RequestQueue) Back() Request {
 	select {
 	case <-rq.sig:
 		rq.m.RLock()
 		e := rq.l.Back()
 		rq.m.RUnlock()
 
-		return e.Value.(*Request)
+		return e.Value.(Request)
 	case <-rq.done:
+		select {
+		case <-rq.sig:
+			rq.m.RLock()
+			e := rq.l.Back()
+			rq.m.RUnlock()
+
+			return e.Value.(Request)
+		default:
+		}
+
 		return nil
 	}
 }
 
-func (rq *RequestQueue) BackPopDone() *Request {
+func (rq *RequestQueue) BackPopDone() Request {
 	for {
 		rq.m.RLock()
 		if rq.l.Back() != nil {
@@ -83,20 +93,29 @@ func (rq *RequestQueue) PopBack() {
 	rq.m.Unlock()
 }
 
-func (rq *RequestQueue) Cancel(id uint32) {
+func (rq *RequestQueue) ForEach(f func(req Request)) {
+	rq.m.RLock()
+	defer rq.m.RUnlock()
+
+	for e := rq.l.Front(); e != nil; e = e.Next() {
+		f(e.Value.(Request))
+	}
+}
+
+func (rq *RequestQueue) Cancel(id RequestID) {
 	req := rq.get(id)
 	if req != nil {
 		req.Cancel()
 	}
 }
 
-func (rq *RequestQueue) get(id uint32) *Request {
+func (rq *RequestQueue) get(id RequestID) Request {
 	rq.m.RLock()
 	defer rq.m.RUnlock()
 
 	for e := rq.l.Front(); e != nil; e = e.Next() {
-		if e.Value.(*Request).id == id {
-			return e.Value.(*Request)
+		if e.Value.(Request).ID().Equals(id) {
+			return e.Value.(Request)
 		}
 	}
 

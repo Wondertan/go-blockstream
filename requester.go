@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/Wondertan/go-serde"
 	"github.com/ipfs/go-block-format"
 
 	"github.com/Wondertan/go-blockstream/block"
+	"github.com/Wondertan/go-blockstream/blocknet"
 )
 
 // requester is responsible for requesting block from a remote peer.
@@ -16,20 +18,21 @@ import (
 type requester struct {
 	rwc io.ReadWriteCloser
 
-	new, cncl chan *block.Request
-	rq        *block.RequestQueue
+	new        chan *block.RequestGroup
+	have, cncl chan block.RequestID
+	rq         *block.RequestQueue
 
 	ctx    context.Context
 	cancel context.CancelFunc
 }
 
 // newRequester creates new requester.
-func newRequester(ctx context.Context, rwc io.ReadWriteCloser, reqs chan *block.Request, onErr сlose) *requester {
+func newRequester(ctx context.Context, rwc io.ReadWriteCloser, reqs chan *block.RequestGroup, onErr сlose) *requester {
 	ctx, cancel := context.WithCancel(ctx)
 	rcv := &requester{
 		rwc:    rwc,
 		new:    reqs,
-		cncl:   make(chan *block.Request),
+		cncl:   make(chan *block.RequestGroup),
 		rq:     block.NewRequestQueue(ctx.Done()),
 		ctx:    ctx,
 		cancel: cancel,
@@ -39,14 +42,37 @@ func newRequester(ctx context.Context, rwc io.ReadWriteCloser, reqs chan *block.
 	return rcv
 }
 
+func (r *requester) Send(req *block.RequestGroup) error {
+	select {
+	case r.new <- req:
+		return nil
+	case <-r.ctx.Done():
+		return r.ctx.Err()
+	}
+}
+
+func (r *requester) Have(id block.RequestID) {
+	select {
+	case r.have <- id:
+	case <-r.ctx.Done():
+	}
+}
+
+func (r *requester) Cancel(id block.RequestID) {
+	select {
+	case r.cncl <- id:
+	case <-r.ctx.Done():
+	}
+}
+
 // writeLoop is a long running method which asynchronously handles requests, sends them to remote responder and queues up
 // for future read by readLoop. It also handles request canceling, as well as request recovering in case stream is dead.
-func (r *requester) writeLoop() error {
+func (r *requester) writeLoop() (err error) {
 	defer r.cancel()
 	for {
 		select {
 		case req := <-r.new:
-			err := writeBlocksReq(r.rwc, req.Id(), req.Remains())
+			_, err = serde.Write(r.rwc, blocknet.newBlockRequestMsg(req))
 			if err != nil {
 				select {
 				case r.new <- req:
@@ -57,12 +83,16 @@ func (r *requester) writeLoop() error {
 				return fmt.Errorf("can't writeLoop request(%d): %w", req.Id(), err)
 			}
 
-			go r.onCancel(req)
 			r.rq.Enqueue(req)
-		case req := <-r.cncl:
-			err := writeBlocksReq(r.rwc, req.Id(), nil)
+		case id := <-r.have:
+			_, err = serde.Write(r.rwc, blocknet.newHaveRequestMsg(id))
 			if err != nil {
-				return fmt.Errorf("can't cancel request(%d): %w", req.Id(), err)
+				return fmt.Errorf("can't write request(%s) have message: %w", id, err)
+			}
+		case id := <-r.cncl:
+			_, err = serde.Write(r.rwc, blocknet.newCancelRequestMsg(id))
+			if err != nil {
+				return fmt.Errorf("can't write request(%s) cancel message: %w", id, err)
 			}
 		case <-r.ctx.Done():
 			return r.rwc.Close()
@@ -73,7 +103,7 @@ func (r *requester) writeLoop() error {
 // readLoop is a long running method which receives requested blocks from the remote responder and fulfills queued request.
 func (r *requester) readLoop() error {
 	for {
-		id, data, reqErr, err := readBlocksResp(r.rwc)
+		id, data, reqErr, err := blocknet.readBlocksResp(r.rwc)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				return nil
@@ -105,7 +135,7 @@ func (r *requester) readLoop() error {
 		ids := req.Remains()
 		bs := make([]blocks.Block, len(data))
 		for i, b := range data {
-			bs[i], err = newBlockCheckCid(b, ids[i])
+			bs[i], err = blocknet.newBlockCheckCid(b, ids[i])
 			if err != nil {
 				if errors.Is(err, blocks.ErrWrongHash) {
 					log.Errorf("%s: expected: %s, received: %s", err, ids[i], bs[i])
@@ -118,19 +148,5 @@ func (r *requester) readLoop() error {
 		if !req.Fill(bs) {
 			r.rq.PopBack()
 		}
-	}
-}
-
-// onCancel handles request cancellation.
-func (r *requester) onCancel(req *block.Request) {
-	select {
-	case <-req.Done():
-		if !req.Fulfilled() {
-			select {
-			case r.cncl <- req:
-			case <-r.ctx.Done():
-			}
-		}
-	case <-r.ctx.Done():
 	}
 }

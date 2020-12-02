@@ -13,6 +13,7 @@ import (
 	"github.com/libp2p/go-libp2p-core/protocol"
 
 	"github.com/Wondertan/go-blockstream/block"
+	"github.com/Wondertan/go-blockstream/blocknet"
 )
 
 var log = logging.Logger("blockstream")
@@ -28,7 +29,7 @@ type BlockStream struct {
 	Granter access.Granter
 	Blocks  blockstore.Blockstore
 
-	reqs chan *block.Request
+	reqs chan *block.RequestGroup
 
 	collectors int
 
@@ -49,7 +50,7 @@ func NewBlockStream(ctx context.Context, host host.Host, bstore blockstore.Block
 		Host:       host,
 		Granter:    granter,
 		Blocks:     bstore,
-		reqs:       make(chan *block.Request, 16),
+		reqs:       make(chan *block.RequestGroup, 16),
 		collectors: collectorsDefault,
 	}
 	for _, opt := range opts {
@@ -57,7 +58,7 @@ func NewBlockStream(ctx context.Context, host host.Host, bstore blockstore.Block
 	}
 
 	for range make([]bool, collectorsDefault) {
-		block.NewCollector(ctx, bs.reqs, bstore, maxMsgSize)
+		block.NewCollector(ctx, bs.reqs, bstore, blocknet.maxMsgSize)
 	}
 
 	host.SetStreamHandler(Protocol, func(s network.Stream) {
@@ -86,7 +87,7 @@ func (bs *BlockStream) Session(ctx context.Context, token access.Token, autosave
 			return nil, err
 		}
 
-		err = giveHand(s, token)
+		err = blocknet.GiveHand(s, token)
 		if err != nil {
 			s.Reset()
 			return nil, err
@@ -108,7 +109,7 @@ func (bs *BlockStream) Session(ctx context.Context, token access.Token, autosave
 
 func (bs *BlockStream) handler(s network.Stream) error {
 	var done chan<- error
-	_, err := takeHand(s, func(t access.Token) (err error) {
+	_, err := blocknet.TakeHand(s, func(t access.Token) (err error) {
 		done, err = bs.Granter.Granted(t, s.Conn().RemotePeer())
 		return
 	})
@@ -141,7 +142,6 @@ func (bs *BlockStream) handler(s network.Stream) error {
 	return nil
 }
 
-type onToken func(access.Token) error
 type сlose func(func() error)
 
 var logClose = func(f func() error) {

@@ -22,10 +22,10 @@ func TestRequestResponder(t *testing.T) {
 
 	bs, ids := test.RandBlocks(t, rand.Reader, 8, 256)
 
-	in, out := make(chan *block.Request, 4), make(chan *block.Request, 4)
+	in, out := make(chan *block.RequestGroup, 4), make(chan *block.RequestGroup, 4)
 	newRequestPair(ctx, in, out)
 
-	reqIn := block.NewRequest(ctx, 0, ids)
+	reqIn := block.NewRequestGroup(ctx, 0, ids)
 	in <- reqIn
 
 	reqOut := <-out
@@ -135,7 +135,7 @@ func TestSessionNotFound(t *testing.T) {
 }
 
 func addProvider(ctx context.Context, ses *Session, bstore blockstore.Blockstore, msgSize int) {
-	reqs := make(chan *block.Request, 8)
+	reqs := make(chan *block.RequestGroup, 8)
 	s1, s2 := streamPair()
 	newResponder(ctx, s2, reqs, logClose)
 	block.NewCollector(ctx, reqs, bstore, msgSize)

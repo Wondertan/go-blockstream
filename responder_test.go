@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/Wondertan/go-blockstream/block"
+	"github.com/Wondertan/go-blockstream/blocknet"
 	"github.com/Wondertan/go-blockstream/test"
 )
 
@@ -26,11 +27,11 @@ func TestResponder(t *testing.T) {
 
 	bs, ids := test.RandBlocks(t, rand.Reader, count, size)
 
-	reqs := make(chan *block.Request, 8)
+	reqs := make(chan *block.RequestGroup, 8)
 	s := newTestResponder(t, ctx, reqs)
 
 	// normal case
-	err := writeBlocksReq(s, uint32(1), ids[:4])
+	err := blocknet.writeBlocksReq(s, uint32(1), ids[:4])
 	require.Nil(t, err, err)
 
 	req := <-reqs
@@ -48,10 +49,10 @@ func TestResponder(t *testing.T) {
 	assertBlockResp(t, s, 1, ids[2:4], nil)
 
 	// cancel case
-	err = writeBlocksReq(s, uint32(2), ids[4:8])
+	err = blocknet.writeBlocksReq(s, uint32(2), ids[4:8])
 	require.Nil(t, err, err)
 
-	err = writeBlocksReq(s, uint32(2), nil)
+	err = blocknet.writeBlocksReq(s, uint32(2), nil)
 	require.Nil(t, err, err)
 
 	req2 := <-reqs
@@ -61,7 +62,7 @@ func TestResponder(t *testing.T) {
 	assert.Equal(t, io.EOF, err)
 
 	// another normal case
-	err = writeBlocksReq(s, uint32(3), ids[8:])
+	err = blocknet.writeBlocksReq(s, uint32(3), ids[8:])
 	require.Nil(t, err, err)
 
 	req3 := <-reqs
@@ -79,7 +80,7 @@ func TestResponder(t *testing.T) {
 	assertBlockResp(t, s, 3, ids[9:10], nil)
 
 	// error case
-	err = writeBlocksReq(s, uint32(4), ids)
+	err = blocknet.writeBlocksReq(s, uint32(4), ids)
 	require.Nil(t, err, err)
 
 	req4 := <-reqs

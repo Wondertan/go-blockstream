@@ -2,8 +2,6 @@ package block
 
 import (
 	"context"
-	"errors"
-	"io"
 
 	blocks "github.com/ipfs/go-block-format"
 	logging "github.com/ipfs/go-log/v2"
@@ -25,7 +23,7 @@ func NewStream(ctx context.Context) *stream {
 	return s
 }
 
-func (s *stream) Enqueue(reqs ...*Request) {
+func (s *stream) Enqueue(reqs ...Request) {
 	s.queue.Enqueue(reqs...)
 }
 
@@ -42,22 +40,21 @@ func (s *stream) stream() {
 		}
 
 		for {
-			bs, err := req.Next()
-			if err != nil {
-				if errors.Is(err, io.EOF) {
-					break
-				}
+			o, ok := req.Next()
+			if !ok {
+				break
+			}
 
+			b, err := o.Get()
+			if err != nil {
 				log.Errorf("Aborting stream, request error: %s", err)
 				return
 			}
 
-			for _, b := range bs {
-				select {
-				case s.output <- b:
-				case <-s.ctx.Done():
-					return
-				}
+			select {
+			case s.output <- b:
+			case <-s.ctx.Done():
+				return
 			}
 		}
 
