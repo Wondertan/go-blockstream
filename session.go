@@ -295,9 +295,9 @@ func (ses *Session) worker(id uint32) {
 			toFetch := make([]cid.Cid, len(j.results))
 
 			for i, res := range j.results {
-				res.Block, res.Error = ses.bs.Get(res.Cid)
-				if res.Error != nil {
-					toFetch[i] = res.Cid
+				res.Block, res.Err = ses.bs.Get(res.Id)
+				if res.Err != nil {
+					toFetch[i] = res.Id
 					fetch = true
 				} else {
 					continue
@@ -325,7 +325,7 @@ func (ses *Session) worker(id uint32) {
 							fetched = append(fetched, res.Block)
 						}
 					case <-j.ctx.Done():
-						j.results[i].Error = j.ctx.Err()
+						j.results[i].Err = j.ctx.Err()
 					}
 				}
 
@@ -358,7 +358,7 @@ type blockJob struct {
 func (ses *Session) newJob(ctx context.Context, ids []cid.Cid, done, next chan *blockJob) *blockJob {
 	results := make([]*block.Result, len(ids))
 	for i, id := range ids {
-		results[i] = &block.Result{Cid: id}
+		results[i] = &block.Result{Id: id}
 	}
 
 	j := &blockJob{

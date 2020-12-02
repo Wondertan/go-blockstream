@@ -64,7 +64,7 @@ func (s *Stream) stream() {
 				if !errors.Is(err, io.EOF) {
 					for _, id := range req.Remains() {
 						select {
-						case s.out <- Result{Cid: id, Error: err}:
+						case s.out <- Result{Id: id, Err: err}:
 						case <-s.ctx.Done():
 							return
 						}
@@ -76,7 +76,7 @@ func (s *Stream) stream() {
 
 			for _, b := range bs {
 				select {
-				case s.out <- Result{Cid: b.Cid(), Block: b}:
+				case s.out <- Result{Block: b}:
 				case <-s.ctx.Done():
 					return
 				}

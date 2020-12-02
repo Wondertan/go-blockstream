@@ -5,8 +5,8 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/Wondertan/go-libp2p-access"
-	"github.com/ipfs/go-ipfs-blockstore"
+	access "github.com/Wondertan/go-libp2p-access"
+	blockstore "github.com/ipfs/go-ipfs-blockstore"
 	logging "github.com/ipfs/go-log/v2"
 	"github.com/libp2p/go-libp2p-core/host"
 	"github.com/libp2p/go-libp2p-core/network"
@@ -113,7 +113,7 @@ func (bs *BlockStream) Session(ctx context.Context, peers []peer.ID, opts ...Ses
 					log.Errorf("Failed provider %s for session %s: %s", p.Pretty(), tkn, err)
 
 					if ses.removeProvider() == 0 {
-						log.Errorf("Terminating session %s: %s", err)
+						log.Errorf("Terminating session %s: %s", tkn, err)
 
 						ses.err = ErrNoProviders
 						ses.cancel()
@@ -162,8 +162,10 @@ func (bs *BlockStream) handler(s network.Stream) error {
 	return nil
 }
 
-type onToken func(access.Token) error
-type сlose func(func() error)
+type (
+	onToken func(access.Token) error
+	сlose   func(func() error)
+)
 
 var logClose = func(f func() error) {
 	err := f()

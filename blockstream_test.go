@@ -3,16 +3,17 @@ package blockstream
 import (
 	"context"
 	"crypto/rand"
-	"github.com/Wondertan/go-blockstream/block"
-	"github.com/stretchr/testify/assert"
 	"sync"
 	"testing"
+
+	"github.com/Wondertan/go-blockstream/block"
+	"github.com/stretchr/testify/assert"
 
 	"github.com/libp2p/go-libp2p-core/peer"
 	mocknet "github.com/libp2p/go-libp2p/p2p/net/mock"
 	"github.com/stretchr/testify/require"
 
-	"github.com/Wondertan/go-libp2p-access"
+	access "github.com/Wondertan/go-libp2p-access"
 
 	"github.com/Wondertan/go-blockstream/test"
 )
@@ -83,9 +84,9 @@ func TestBlockStream(t *testing.T) {
 		for _, id := range cids {
 			res, ok := <-ch
 			require.True(t, ok)
-			assert.Equal(t, id, res.Cid)
+			assert.Equal(t, id, res.Cid())
 			assert.NotNil(t, res.Block)
-			assert.NoError(t, res.Error)
+			assert.NoError(t, res.Err)
 		}
 
 		_, ok := <-errs[i]
