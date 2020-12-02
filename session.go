@@ -13,7 +13,6 @@ import (
 
 const (
 	maxAvailableWorkers = 128
-	requestBufferSize   = 8
 )
 
 // TODO Refactor this, my ayes hurt watching this
@@ -35,7 +34,7 @@ type Session struct {
 func newSession(ctx context.Context, opts ...SessionOption) *Session {
 	ctx, cancel := context.WithCancel(ctx)
 	ses := &Session{
-		reqs:   make(chan *block.Request, requestBufferSize),
+		reqs:   make(chan *block.Request, 32),
 		ctx:    ctx,
 		cancel: cancel,
 		jobch:  make(chan *blockJob),
@@ -173,7 +172,7 @@ func (ses *Session) requestId() uint32 {
 
 func (ses *Session) streamWithStore(ctx context.Context, in <-chan []cid.Cid) (<-chan block.Result, <-chan error) {
 	ctx, cancel := context.WithCancel(ctx)
-	outR, outErr := make(chan block.Result, len(in)), make(chan error, 1)
+	outR, outErr := make(chan block.Result, cap(in)), make(chan error, 1)
 	first := make(chan *blockJob, 1)
 
 	go func() { // handles input
@@ -229,7 +228,7 @@ func (ses *Session) streamWithStore(ctx context.Context, in <-chan []cid.Cid) (<
 
 func (ses *Session) blocksWithStore(ctx context.Context, ids []cid.Cid) (<-chan block.Result, <-chan error) {
 	ctx, cancel := context.WithCancel(ctx)
-	outR, outErr := make(chan block.Result, len(ids)), make(chan error, 1)
+	outR, outErr := make(chan block.Result, cap(ids)), make(chan error, 1)
 	done := make(chan *blockJob, 1)
 
 	go func() {
@@ -292,14 +291,14 @@ func (ses *Session) worker(id uint32) {
 
 			var fetch bool
 			var fetched []blocks.Block
-			toFetch := make([]cid.Cid, len(j.results))
+			toFetch := make([]cid.Cid, len(j.res))
 
-			for i, res := range j.results {
-				res.Block, res.Err = ses.bs.Get(res.Id)
-				if res.Err != nil {
-					toFetch[i] = res.Id
+			var err error
+			for i, id := range j.ids {
+				j.res[i].Block, err = ses.bs.Get(id)
+				if err != nil {
+					toFetch[i] = id
 					fetch = true
-				} else {
 					continue
 				}
 			}
@@ -320,12 +319,12 @@ func (ses *Session) worker(id uint32) {
 
 					select {
 					case res := <-s.Output():
-						*j.results[i] = res
+						j.res[i] = res
 						if res.Block != nil {
 							fetched = append(fetched, res.Block)
 						}
 					case <-j.ctx.Done():
-						j.results[i].Err = j.ctx.Err()
+						j.res[i].Err = j.ctx.Err()
 					}
 				}
 
@@ -351,32 +350,28 @@ func (ses *Session) worker(id uint32) {
 type blockJob struct {
 	id         uint32
 	ctx        context.Context
-	results    []*block.Result
+	ids        []cid.Cid
+	res        []block.Result
 	next, done chan *blockJob
 }
 
 func (ses *Session) newJob(ctx context.Context, ids []cid.Cid, done, next chan *blockJob) *blockJob {
-	results := make([]*block.Result, len(ids))
-	for i, id := range ids {
-		results[i] = &block.Result{Id: id}
-	}
-
 	j := &blockJob{
-		id:      atomic.AddUint32(&ses.jobs, 1),
-		ctx:     ctx,
-		results: results,
-		done:    done,
-		next:    next,
+		id:   atomic.AddUint32(&ses.jobs, 1),
+		ctx:  ctx,
+		ids:  ids,
+		res:  make([]block.Result, len(ids)),
+		done: done,
+		next: next,
 	}
-
 	log.Debugf("Got new Job %d.", j.id)
 	return j
 }
 
 func (j *blockJob) write(outR chan block.Result) {
-	for _, res := range j.results {
+	for _, res := range j.res {
 		select {
-		case outR <- *res:
+		case outR <- res:
 		case <-j.ctx.Done():
 		}
 	}
