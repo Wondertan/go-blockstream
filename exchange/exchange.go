@@ -2,11 +2,12 @@ package exchange
 
 import (
 	"context"
+
+	blocks "github.com/ipfs/go-block-format"
 	log2 "github.com/ipfs/go-log"
 
-	"github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
-	"github.com/ipfs/go-ipfs-blockstore"
+	blockstore "github.com/ipfs/go-ipfs-blockstore"
 	iexchange "github.com/ipfs/go-ipfs-exchange-interface"
 
 	"github.com/Wondertan/go-blockstream"
@@ -71,7 +72,7 @@ func (f *fetcher) GetBlocks(ctx context.Context, ids []cid.Cid) (<-chan blocks.B
 		resCh, errCh := f.ses.Blocks(ctx, ids)
 		for res := range resCh {
 			if res.Block == nil {
-				log.Warnf("Failed to retrieve %s: %s", res.Cid, res.Error)
+				log.Warnf("Failed to retrieve %s: %s", res.Cid, res.Err)
 				continue
 			}
 

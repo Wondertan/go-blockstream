@@ -2,7 +2,8 @@ package ipld
 
 import (
 	"context"
-	"github.com/Wondertan/go-blockstream/block"
+
+	blocks "github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
 	format "github.com/ipfs/go-ipld-format"
 
@@ -11,12 +12,7 @@ import (
 
 // Traverse traverses and fetches whole IPLD graph from the stream.
 func Traverse(ctx context.Context, id cid.Cid, ses blockstream.Streamer) error {
-	return blockstream.Explore(ctx, id, ses, func(res block.Result) ([]cid.Cid, error) {
-		b, err := res.Get()
-		if err != nil {
-			return nil, err
-		}
-
+	return blockstream.Explore(ctx, id, ses, func(b blocks.Block) ([]cid.Cid, error) {
 		nd, err := format.Decode(b)
 		if err != nil {
 			return nil, err

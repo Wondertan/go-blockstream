@@ -2,36 +2,40 @@ package blockstream
 
 import (
 	"context"
-	"github.com/Wondertan/go-blockstream/block"
+
+	blocks "github.com/ipfs/go-block-format"
 
 	"github.com/ipfs/go-cid"
 )
 
 // Explorer gets keys from block in a user defined way.
-type Explorer func(block.Result) ([]cid.Cid, error)
+type Explorer func(blocks.Block) ([]cid.Cid, error)
 
 // Explore gets first blocks from stream, passes it to handler that may explore new key in block and handles them over
-// until no more left.
+// until no more left. Once any Result error appears, it returns immediately.
 func Explore(ctx context.Context, id cid.Cid, bs Streamer, h Explorer) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	remains := 1
-	in := make(chan []cid.Cid, 8)
+	in := make(chan []cid.Cid, 32)
 	in <- []cid.Cid{id}
 	defer close(in)
 
 	out, errCh := bs.Stream(ctx, in)
 	for {
 		select {
-		case b, ok := <-out:
+		case res, ok := <-out:
 			if !ok {
 				out = nil
 				continue
 			}
+			if res.Err != nil {
+				return res.Err
+			}
 
 			remains--
-			ids, err := h(b)
+			ids, err := h(res)
 			if err != nil {
 				return err
 			}

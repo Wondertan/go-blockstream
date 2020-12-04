@@ -3,6 +3,10 @@ package blockstream
 import (
 	"context"
 	"crypto/rand"
+	"io"
+	"testing"
+	"time"
+
 	"github.com/Wondertan/go-blockstream/block"
 	"github.com/Wondertan/go-blockstream/test"
 	blocks "github.com/ipfs/go-block-format"
@@ -10,9 +14,6 @@ import (
 	blockstore "github.com/ipfs/go-ipfs-blockstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"io"
-	"testing"
-	"time"
 )
 
 func TestRequestResponder(t *testing.T) {
@@ -79,9 +80,9 @@ func TestSessionStream(t *testing.T) {
 		for _, id := range ids[i*count/times : (i+1)*count/times] {
 			res, ok := <-res
 			require.True(t, ok)
-			assert.Equal(t, id, res.Cid)
+			assert.Equal(t, id, res.Cid())
 			assert.NotNil(t, res.Block)
-			assert.NoError(t, res.Error)
+			assert.NoError(t, res.Err)
 		}
 	}
 
@@ -112,9 +113,9 @@ func TestSessionBlocks(t *testing.T) {
 	for _, id := range ids[:count/2] {
 		res, ok := <-res1
 		require.True(t, ok)
-		assert.Equal(t, id, res.Cid)
+		assert.Equal(t, id, res.Cid())
 		assert.NotNil(t, res.Block)
-		assert.NoError(t, res.Error)
+		assert.NoError(t, res.Err)
 	}
 
 	_, ok := <-err1
@@ -123,9 +124,9 @@ func TestSessionBlocks(t *testing.T) {
 	for _, id := range ids[count/2:] {
 		res, ok := <-res2
 		require.True(t, ok)
-		assert.Equal(t, id, res.Cid)
+		assert.Equal(t, id, res.Cid())
 		assert.NotNil(t, res.Block)
-		assert.NoError(t, res.Error)
+		assert.NoError(t, res.Err)
 	}
 
 	_, ok = <-err2
@@ -155,7 +156,7 @@ func TestSessionNotFound(t *testing.T) {
 	res, err := ses.Blocks(ctx, ids)
 	for res := range res {
 		if i == missing {
-			assert.Error(t, res.Error)
+			assert.Error(t, res.Err)
 		}
 		i++
 	}

@@ -6,11 +6,16 @@ import (
 )
 
 type Result struct {
-	cid.Cid
-	Block blocks.Block
-	Error error
+	blocks.Block
+
+	Id  cid.Cid
+	Err error
 }
 
-func (res Result) Get() (blocks.Block, error) {
-	return res.Block, res.Error
+func (r Result) Cid() cid.Cid {
+	if r.Block != nil {
+		return r.Block.Cid()
+	}
+
+	return r.Id
 }
