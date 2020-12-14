@@ -20,4 +20,5 @@ require (
 	github.com/libp2p/go-libp2p-core v0.6.1
 	github.com/libp2p/go-sockaddr v0.1.0 // indirect
 	github.com/stretchr/testify v1.6.1
+	golang.org/x/sync v0.0.0-20200317015054-43a5402ce75a
 )

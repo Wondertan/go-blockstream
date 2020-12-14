@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"io"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -62,7 +63,7 @@ func TestSessionStream(t *testing.T) {
 
 	bstore, ids := test.RandBlockstore(t, rand.Reader, count, size)
 
-	ses := newSession(ctx)
+	ses := newSession(ctx, nil)
 	addProvider(ctx, ses, bstore, msgSize)
 	addProvider(ctx, ses, bstore, msgSize)
 	addProvider(ctx, ses, bstore, msgSize)
@@ -102,7 +103,7 @@ func TestSessionBlocks(t *testing.T) {
 
 	bstore, ids := test.RandBlockstore(t, rand.Reader, count, size)
 
-	ses := newSession(ctx)
+	ses := newSession(ctx, nil)
 	addProvider(ctx, ses, bstore, msgSize)
 	addProvider(ctx, ses, bstore, msgSize)
 	addProvider(ctx, ses, bstore, msgSize)
@@ -147,7 +148,7 @@ func TestSessionNotFound(t *testing.T) {
 	bstore, ids := test.RandBlockstore(t, rand.Reader, count, size)
 	bstore.DeleteBlock(ids[missing])
 
-	ses := newSession(ctx)
+	ses := newSession(ctx, nil)
 	addProvider(ctx, ses, bstore, msgSize)
 	addProvider(ctx, ses, bstore, msgSize)
 	addProvider(ctx, ses, bstore, msgSize)
@@ -178,7 +179,7 @@ func TestSessionBlockstoreSave(t *testing.T) {
 	empty := test.EmptyBlockstore()
 	bstore, ids := test.RandBlockstore(t, rand.Reader, count, size)
 
-	ses := newSession(ctx, Blockstore(empty), Save(true))
+	ses := newSession(ctx, nil, Blockstore(empty), Save(true))
 	addProvider(ctx, ses, bstore, msgSize)
 
 	_, err := ses.Blocks(ctx, ids)
@@ -198,5 +199,6 @@ func addProvider(ctx context.Context, ses *Session, bstore blockstore.Blockstore
 	s1, s2 := streamPair()
 	newResponder(ctx, s2, reqs, logClose)
 	block.NewCollector(ctx, reqs, bstore, msgSize)
-	ses.addProvider(s1, logClose)
+	newRequester(ctx, s1, ses.reqs, logClose)
+	atomic.AddUint32(&ses.prvs, 1)
 }

@@ -12,7 +12,7 @@ func Offline(off bool) SessionOption {
 
 func Blockstore(bs blockstore.Blockstore) SessionOption {
 	return func(opts *sessionOpts) {
-		opts.bs = bs
+		opts.bstore = bs
 	}
 }
 
@@ -26,7 +26,7 @@ type SessionOption func(*sessionOpts)
 
 type sessionOpts struct {
 	save, offline bool
-	bs            blockstore.Blockstore
+	bstore        blockstore.Blockstore
 }
 
 func (so *sessionOpts) parse(opts ...SessionOption) {
@@ -34,7 +34,7 @@ func (so *sessionOpts) parse(opts ...SessionOption) {
 		opt(so)
 	}
 
-	if so.offline && so.bs == nil {
+	if so.offline && so.bstore == nil {
 		panic("must have Blockstore for offline mode")
 	}
 }

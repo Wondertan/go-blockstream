@@ -80,50 +80,12 @@ func (bs *BlockStream) Close() error {
 
 // Session starts new BlockStream session between current node and providing 'peers'.
 func (bs *BlockStream) Session(ctx context.Context, peers []peer.ID, opts ...SessionOption) (*Session, error) {
-	ses := newSession(ctx, opts...)
+	ses := newSession(ctx, bs, opts...)
 	if ses.offline {
 		return ses, nil
 	}
 
-	tkn, err := access.GetToken(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	for _, p := range peers {
-		s, err := bs.Host.NewStream(ctx, p, Protocol)
-		if err != nil {
-			return nil, err
-		}
-
-		err = giveHand(s, tkn)
-		if err != nil {
-			s.Reset()
-			return nil, err
-		}
-
-		var once sync.Once
-		ses.addProvider(s, func(f func() error) {
-			bs.wg.Add(1)
-			defer bs.wg.Done()
-
-			if err := f(); err != nil {
-				once.Do(func() {
-					s.Reset()
-					log.Errorf("Failed provider %s for session %s: %s", p.Pretty(), tkn, err)
-
-					if ses.removeProvider() == 0 {
-						log.Errorf("Terminating session %s: %s", tkn, err)
-
-						ses.err = ErrNoProviders
-						ses.cancel()
-					}
-				})
-			}
-		})
-	}
-
-	return ses, nil
+	return ses, ses.AddProviders(ctx, peers)
 }
 
 func (bs *BlockStream) handler(s network.Stream) error {

@@ -2,11 +2,15 @@ package blockstream
 
 import (
 	"context"
-	"io"
+	"fmt"
+	"sync"
 	"sync/atomic"
 
-	"github.com/ipfs/go-block-format"
+	access "github.com/Wondertan/go-libp2p-access"
+	blocks "github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
+	"github.com/libp2p/go-libp2p-core/peer"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/Wondertan/go-blockstream/block"
 )
@@ -15,8 +19,10 @@ const (
 	maxAvailableWorkers = 128
 )
 
-// TODO Refactor this, my ayes hurt watching this
+// TODO Refactor session, my eyes hurt watching this
 type Session struct {
+	bstream *BlockStream
+
 	ctx    context.Context
 	cancel context.CancelFunc
 
@@ -31,16 +37,88 @@ type Session struct {
 	sessionOpts
 }
 
-func newSession(ctx context.Context, opts ...SessionOption) *Session {
+func newSession(ctx context.Context, bstream *BlockStream, opts ...SessionOption) *Session {
 	ctx, cancel := context.WithCancel(ctx)
 	ses := &Session{
-		reqs:   make(chan *block.Request, 32),
-		ctx:    ctx,
-		cancel: cancel,
-		jobch:  make(chan *blockJob),
+		bstream: bstream,
+		reqs:    make(chan *block.Request, 32),
+		ctx:     ctx,
+		cancel:  cancel,
+		jobch:   make(chan *blockJob),
 	}
 	ses.parse(opts...)
 	return ses
+}
+
+func (ses *Session) AddProvider(ctx context.Context, p peer.ID) error {
+	tkn, err := access.GetToken(ctx)
+	if err != nil {
+		return err
+	}
+
+	return ses.addProvider(ctx, p, tkn)
+}
+
+func (ses *Session) AddProviders(ctx context.Context, peers []peer.ID) error {
+	tkn, err := access.GetToken(ctx)
+	if err != nil {
+		return err
+	}
+
+	eg, ctx := errgroup.WithContext(ctx)
+	for _, p := range peers {
+		peer := p
+		eg.Go(func() error {
+			return ses.addProvider(ctx, peer, tkn)
+		})
+	}
+
+	return eg.Wait()
+}
+
+func (ses *Session) addProvider(ctx context.Context, p peer.ID, tkn access.Token) error {
+	if ses.offline {
+		return fmt.Errorf("blockstream: can't add provider: session is offline")
+	}
+
+	tkn, err := access.GetToken(ctx)
+	if err != nil {
+		return err
+	}
+
+	s, err := ses.bstream.Host.NewStream(ctx, p, Protocol)
+	if err != nil {
+		return err
+	}
+
+	err = giveHand(s, tkn)
+	if err != nil {
+		s.Reset()
+		return err
+	}
+
+	var once sync.Once
+	newRequester(ses.ctx, s, ses.reqs, func(f func() error) {
+		ses.bstream.wg.Add(1)
+		defer ses.bstream.wg.Done()
+
+		if err := f(); err != nil {
+			once.Do(func() {
+				s.Reset()
+				log.Errorf("Failed provider %s for session %s: %s", p.Pretty(), tkn, err)
+
+				if ses.removeProvider() == 0 {
+					log.Errorf("Terminating session %s: %s", tkn, err)
+
+					ses.err = ErrNoProviders
+					ses.cancel()
+				}
+			})
+		}
+	})
+
+	atomic.AddUint32(&ses.prvs, 1)
+	return nil
 }
 
 // Stream starts direct Block fetching from remote providers. It fetches the Blocks requested with 'in' chan by their ids.
@@ -48,7 +126,7 @@ func newSession(ctx context.Context, opts ...SessionOption) *Session {
 // It might be also terminated with the provided context.
 // Block order is guaranteed to be the same as requested through the `in` chan.
 func (ses *Session) Stream(ctx context.Context, in <-chan []cid.Cid) (<-chan block.Result, <-chan error) {
-	if ses.bs != nil {
+	if ses.bstore != nil {
 		return ses.streamWithStore(ctx, in)
 	}
 
@@ -89,7 +167,7 @@ func (ses *Session) Blocks(ctx context.Context, ids []cid.Cid) (<-chan block.Res
 		return ch, nil
 	}
 
-	if ses.bs != nil {
+	if ses.bstore != nil {
 		return ses.blocksWithStore(ctx, ids)
 	}
 
@@ -151,11 +229,6 @@ func (ses *Session) distribute(ids []cid.Cid) [][]cid.Cid {
 	}
 
 	return sets
-}
-
-func (ses *Session) addProvider(rwc io.ReadWriteCloser, closing сlose) {
-	newRequester(ses.ctx, rwc, ses.reqs, closing)
-	atomic.AddUint32(&ses.prvs, 1)
 }
 
 func (ses *Session) removeProvider() uint32 {
@@ -295,7 +368,7 @@ func (ses *Session) worker(id uint32) {
 
 			var err error
 			for i, id := range j.ids {
-				j.res[i].Block, err = ses.bs.Get(id)
+				j.res[i].Block, err = ses.bstore.Get(id)
 				if err != nil {
 					toFetch[i] = id
 					fetch = true
@@ -334,7 +407,7 @@ func (ses *Session) worker(id uint32) {
 			select {
 			case j.done <- j:
 				if len(fetched) > 0 && ses.save {
-					err := ses.bs.PutMany(fetched)
+					err := ses.bstore.PutMany(fetched)
 					if err != nil {
 						log.Errorf("Failed to save fetched blocks: %ses", err)
 					}
